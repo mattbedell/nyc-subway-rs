@@ -4,12 +4,13 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-error-chain = "0.12.4"
 prost = "0.13.2"
 reqwest = "0.12.7"
 serde_json = "1.0.128"
 tokio = { version = "1.40.0", features = ["full"] }
 serde = { version = "1.0.210", features = ["derive"] }
+xdg = "2.5.2"
+anyhow = "1.0.89"
 
 [build-dependencies]
 prost-build = "0.13.2"
