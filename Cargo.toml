@@ -11,6 +11,7 @@ tokio = { version = "1.40.0", features = ["full"] }
 serde = { version = "1.0.210", features = ["derive"] }
 xdg = "2.5.2"
 anyhow = "1.0.89"
+zip = "2.2.0"
 
 [build-dependencies]
 prost-build = "0.13.2"

@@ -1,13 +1,13 @@
 use std::fs::File;
 
+use anyhow::Result;
 use prost::Message;
 use reqwest::{self, Response};
 use serde_json;
-use anyhow::Result;
 
-
+mod gtfs;
 mod proto;
-mod transit;
+mod util;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -21,6 +21,9 @@ async fn main() -> Result<()> {
     // let writer = File::create("gtfs-realtime.json").unwrap();
     // serde_json::to_writer(writer, &feed).unwrap();
 
-    transit::fetch_gtfs().await?;
+    if gtfs::shoud_fetch() {
+        let gtfs_zip = gtfs::fetch().await?;
+        gtfs::unzip(gtfs_zip).await?;
+    }
     Ok(())
 }
