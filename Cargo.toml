@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+nyc_subway_rs_derive = { path = "./nyc_subway_rs_derive" }
 prost = "0.13.2"
 reqwest = "0.12.7"
 serde_json = "1.0.128"
