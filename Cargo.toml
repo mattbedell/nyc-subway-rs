@@ -13,6 +13,7 @@ xdg = "2.5.2"
 anyhow = "1.0.89"
 zip = "2.2.0"
 csv = "1.3.0"
+serde_repr = "0.1.19"
 
 [build-dependencies]
 prost-build = "0.13.2"

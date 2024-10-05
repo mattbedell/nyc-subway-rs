@@ -1,39 +1,46 @@
+use std::borrow::BorrowMut;
 use std::collections::HashMap;
 use std::cell::{RefCell, Cell};
+use std::ops::DerefMut;
 
 use anyhow::Result;
 use serde::Deserialize;
+use serde_repr::{Deserialize_repr};
 
 mod gtfs;
 mod proto;
 mod util;
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize_repr, PartialEq)]
+#[repr(u8)]
 enum LocationKind {
-    Platform = 0,
     Station = 1,
+    #[serde(other)]
+    Platform = 0,
 }
 
+#[derive(Debug)]
 struct Point(u16, u16);
 
-struct Stop<'a> {
+#[derive(Debug)]
+struct Stop {
     pub id: String,
     pub kind: LocationKind,
     pub pos: Point,
     pub lat: f32,
     pub lon: f32,
-    pub parent: Option<&'a Stop<'a>>
+    pub parent: Option<String>
 }
 
-impl<'a> From<StopRow> for Stop<'a> {
-    fn from(v: StopRow) -> Self {
+impl From<StopRow> for Stop {
+    fn from(mut v: StopRow) -> Self {
         Stop {
             id: v.stop_id,
-            kind: v.location_type.unwrap_or(LocationKind::Platform),
+            kind: v.location_type,
             pos: Point(0,0),
             lat: v.stop_lat,
             lon: v.stop_lon,
-            parent: None,
+            parent: v.parent_station.take(),
         }
     }
 }
@@ -43,7 +50,7 @@ struct StopRow {
     stop_id: String,
     stop_lat: f32,
     stop_lon: f32,
-    location_type: Option<LocationKind>,
+    location_type: LocationKind,
     parent_station: Option<String>,
 }
 
@@ -60,27 +67,17 @@ async fn main() -> Result<()> {
 
     let mut rdr = csv::Reader::from_path(stops_path)?;
 
-    let mut stops: HashMap<String, RefCell<Stop>> = HashMap::new();
-
-    let mut child_ids: Vec<(String, String)> = vec![];
+    // let mut stops: HashMap<String, RefCell<Stop>> = HashMap::new();
+    let mut stops: HashMap<String, Stop> = HashMap::new();
 
     for rec in rdr.deserialize() {
         let stop_row: StopRow = rec?;
-        let parent = stop_row.parent_station.clone();
         let stop = Stop::from(stop_row);
-        if let Some(parent) = parent {
-            child_ids.push((stop.id.clone(), parent));
-        }
-        stops.insert(stop.id.clone(), RefCell::new(stop));
+        stops.insert(stop.id.clone(), stop);
     };
 
-    for (child_id, parent_id) in child_ids {
-        let parent = stops.get(&parent_id).unwrap();
-        let child = stops.get(&child_id).unwrap();
-        let p = *parent.borrow();
-        child.borrow_mut().parent = Some(*parent.borrow());
-    };
-
+    let some_stops: Vec<&Stop> = stops.values().take(10).collect();
+    println!("{:?}", some_stops);
 
     // children.into_iter().map(|(mut child, parent_id)| {
     //     let parent = stops.get(&parent_id);
