@@ -1,22 +1,19 @@
-use std::borrow::BorrowMut;
 use std::collections::HashMap;
-use std::cell::{RefCell, Cell};
-use std::ops::DerefMut;
+use std::fmt::Formatter;
 
 use anyhow::Result;
-use serde::Deserialize;
-use serde_repr::{Deserialize_repr};
+use serde::{de::Visitor, Deserialize, Deserializer};
 
 mod gtfs;
 mod proto;
 mod util;
 
-#[derive(Debug, Deserialize_repr, PartialEq)]
-#[repr(u8)]
+#[derive(Debug)]
+#[derive(nyc_subway_rs_derive::Deserialize_enum_or)]
 enum LocationKind {
-    Station = 1,
-    #[serde(other)]
+    #[fallback]
     Platform = 0,
+    Station = 1,
 }
 
 #[derive(Debug)]
@@ -33,14 +30,14 @@ struct Stop {
 }
 
 impl From<StopRow> for Stop {
-    fn from(mut v: StopRow) -> Self {
+    fn from(v: StopRow) -> Self {
         Stop {
             id: v.stop_id,
             kind: v.location_type,
             pos: Point(0,0),
             lat: v.stop_lat,
             lon: v.stop_lon,
-            parent: v.parent_station.take(),
+            parent: v.parent_station,
         }
     }
 }
@@ -54,7 +51,6 @@ struct StopRow {
     parent_station: Option<String>,
 }
 
-
 #[tokio::main]
 async fn main() -> Result<()> {
     if gtfs::shoud_fetch() {
@@ -67,41 +63,19 @@ async fn main() -> Result<()> {
 
     let mut rdr = csv::Reader::from_path(stops_path)?;
 
-    // let mut stops: HashMap<String, RefCell<Stop>> = HashMap::new();
     let mut stops: HashMap<String, Stop> = HashMap::new();
+
+    let mut log = 0;
 
     for rec in rdr.deserialize() {
         let stop_row: StopRow = rec?;
         let stop = Stop::from(stop_row);
+        if log < 10 {
+            println!("{:#?}", stop);
+            log += 1;
+        }
         stops.insert(stop.id.clone(), stop);
     };
-
-    let some_stops: Vec<&Stop> = stops.values().take(10).collect();
-    println!("{:?}", some_stops);
-
-    // children.into_iter().map(|(mut child, parent_id)| {
-    //     let parent = stops.get(&parent_id);
-    //     child.parent = parent;
-    //     child
-    // }).for_each(|child| {
-    //     stops.insert(child.id.clone(), child);
-    // });
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
     // let res =
     //     reqwest::get("https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-bdfm")
@@ -112,7 +86,6 @@ async fn main() -> Result<()> {
     // feed.merge(bytes).unwrap();
     // let writer = File::create("gtfs-realtime.json").unwrap();
     // serde_json::to_writer(writer, &feed).unwrap();
-
 
     Ok(())
 }
