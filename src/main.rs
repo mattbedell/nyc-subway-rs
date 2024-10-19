@@ -2,14 +2,15 @@ use std::collections::HashMap;
 use std::fmt::Formatter;
 
 use anyhow::Result;
+use env_logger;
 use serde::{de::Visitor, Deserialize, Deserializer};
 
-mod gtfs;
+use util::static_data::{self, COASTLINE_STATIC, GTFS_STATIC};
+
 mod proto;
 mod util;
 
-#[derive(Debug)]
-#[derive(nyc_subway_rs_derive::Deserialize_enum_or)]
+#[derive(Debug, nyc_subway_rs_derive::Deserialize_enum_or)]
 enum LocationKind {
     #[fallback]
     Platform = 0,
@@ -26,7 +27,7 @@ struct Stop {
     pub pos: Point,
     pub lat: f32,
     pub lon: f32,
-    pub parent: Option<String>
+    pub parent: Option<String>,
 }
 
 impl From<StopRow> for Stop {
@@ -34,7 +35,7 @@ impl From<StopRow> for Stop {
         Stop {
             id: v.stop_id,
             kind: v.location_type,
-            pos: Point(0,0),
+            pos: Point(0, 0),
             lat: v.stop_lat,
             lon: v.stop_lon,
             parent: v.parent_station,
@@ -53,12 +54,17 @@ struct StopRow {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    if gtfs::shoud_fetch() {
-        let gtfs_zip = gtfs::fetch().await?;
-        gtfs::unzip(gtfs_zip).await?;
+    env_logger::init();
+    let xdg = util::get_xdg()?;
+    if static_data::shoud_fetch(GTFS_STATIC) {
+        let gtfs_zip = static_data::fetch(GTFS_STATIC, None).await?;
+        static_data::unzip(gtfs_zip).await?;
     }
 
-    let xdg = util::get_xdg()?;
+    if static_data::shoud_fetch(COASTLINE_STATIC) {
+        static_data::fetch(COASTLINE_STATIC, Some(xdg.get_data_home())).await?;
+    }
+
     let stops_path = xdg.find_data_file("stops.txt").unwrap();
 
     let mut rdr = csv::Reader::from_path(stops_path)?;
@@ -71,11 +77,11 @@ async fn main() -> Result<()> {
         let stop_row: StopRow = rec?;
         let stop = Stop::from(stop_row);
         if log < 10 {
-            println!("{:#?}", stop);
+            // println!("{:#?}", stop);
             log += 1;
         }
         stops.insert(stop.id.clone(), stop);
-    };
+    }
 
     // let res =
     //     reqwest::get("https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-bdfm")
