@@ -25,6 +25,10 @@ pub mod static_data {
         "https://data.cityofnewyork.us/resource/59xk-wagz.geojson",
         "nyc_coastline.geojson",
     );
+    pub const BOROUGH_BOUNDARIES_STATIC: StaticDataEndpoint = (
+        "https://data.cityofnewyork.us/resource/7t3b-ywvw.geojson",
+        "nyc_boroughs.geojson",
+    );
     pub async fn fetch(
         endpoint: StaticDataEndpoint,
         base_path: Option<PathBuf>,

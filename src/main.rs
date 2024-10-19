@@ -1,11 +1,15 @@
+use std::cmp;
 use std::collections::HashMap;
 use std::fmt::Formatter;
 
 use anyhow::Result;
 use env_logger;
+use geo::{self, BoundingRect, Coord, Rect};
+use geojson;
+use proj;
 use serde::{de::Visitor, Deserialize, Deserializer};
 
-use util::static_data::{self, COASTLINE_STATIC, GTFS_STATIC};
+use util::static_data::{self, BOROUGH_BOUNDARIES_STATIC, COASTLINE_STATIC, GTFS_STATIC};
 
 mod proto;
 mod util;
@@ -52,6 +56,13 @@ struct StopRow {
     parent_station: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+struct Boro {
+    boro_name: String,
+    #[serde(deserialize_with = "geojson::de::deserialize_geometry")]
+    geometry: geo::geometry::Geometry,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     env_logger::init();
@@ -63,6 +74,10 @@ async fn main() -> Result<()> {
 
     if static_data::shoud_fetch(COASTLINE_STATIC) {
         static_data::fetch(COASTLINE_STATIC, Some(xdg.get_data_home())).await?;
+    }
+
+    if static_data::shoud_fetch(BOROUGH_BOUNDARIES_STATIC) {
+        static_data::fetch(BOROUGH_BOUNDARIES_STATIC, Some(xdg.get_data_home())).await?;
     }
 
     let stops_path = xdg.find_data_file("stops.txt").unwrap();
@@ -83,15 +98,43 @@ async fn main() -> Result<()> {
         stops.insert(stop.id.clone(), stop);
     }
 
-    // let res =
-    //     reqwest::get("https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-bdfm")
-    //         .await?;
+    let feature_reader = {
+        use std::fs::File;
+        let file = File::open(xdg.find_data_file(BOROUGH_BOUNDARIES_STATIC.1).unwrap()).unwrap();
+        geojson::FeatureReader::from_reader(file)
+    };
 
-    // let bytes = res.bytes().await?;
-    // let mut feed = proto::gtfs::realtime::FeedMessage::default();
-    // feed.merge(bytes).unwrap();
-    // let writer = File::create("gtfs-realtime.json").unwrap();
-    // serde_json::to_writer(writer, &feed).unwrap();
-
+    let mut boros: Vec<Boro> = Vec::new();
+    for rec in feature_reader.deserialize().unwrap() {
+        let boro: Boro = rec?;
+        boros.push(boro);
+    }
+    let f = boros.first().unwrap();
+    let rect = f.geometry.bounding_rect();
+    let bounding_rect = boros
+        .iter()
+        .map(|boro| boro.geometry.bounding_rect().unwrap())
+        .reduce(|acc, rect| {
+            let Coord { x: min_x, y: min_y } = acc.min();
+            let Coord {
+                x: omin_x,
+                y: omin_y,
+            } = rect.min();
+            let Coord { x: max_x, y: max_y } = acc.max();
+            let Coord {
+                x: omax_x,
+                y: omax_y,
+            } = rect.max();
+            let nmin = Coord {
+                x: min_x.min(omin_x),
+                y: min_y.min(omin_y),
+            };
+            let nmax = Coord {
+                x: max_x.max(omax_x),
+                y: max_y.max(omax_y),
+            };
+            Rect::new(nmin, nmax)
+        }).unwrap();
+    println!("{:?}: width: {} height: {}", bounding_rect, f.geometry.bounding_rect().unwrap().width(), f.geometry.bounding_rect().unwrap().height());
     Ok(())
 }
