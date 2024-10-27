@@ -4,15 +4,17 @@ use std::fmt::Formatter;
 
 use anyhow::Result;
 use env_logger;
-use geo::{self, BoundingRect, Coord, Rect};
+use geo::{
+    self, Area, BoundingRect, Centroid, Coord, HausdorffDistance, HaversineBearing, HaversineDistance, LineString, MapCoords, MapCoordsInPlace, MultiPolygon, Point, Rect, Scale
+};
 use geojson;
 use serde::{de::Visitor, Deserialize, Deserializer};
 
 use util::static_data::{self, BOROUGH_BOUNDARIES_STATIC, COASTLINE_STATIC, GTFS_STATIC};
 
 mod proto;
-mod util;
 mod render;
+mod util;
 
 #[derive(Debug, nyc_subway_rs_derive::Deserialize_enum_or)]
 enum LocationKind {
@@ -20,9 +22,6 @@ enum LocationKind {
     Platform = 0,
     Station = 1,
 }
-
-#[derive(Debug)]
-struct Point(u16, u16);
 
 #[derive(Debug)]
 struct Stop {
@@ -39,7 +38,7 @@ impl From<StopRow> for Stop {
         Stop {
             id: v.stop_id,
             kind: v.location_type,
-            pos: Point(0, 0),
+            pos: Point::new(0., 0.),
             lat: v.stop_lat,
             lon: v.stop_lon,
             parent: v.parent_station,
@@ -61,6 +60,28 @@ struct Boro {
     boro_name: String,
     #[serde(deserialize_with = "geojson::de::deserialize_geometry")]
     geometry: geo::geometry::Geometry,
+}
+
+fn combine_bounding_rect(acc: Rect, rect: Rect) -> Rect {
+    let Coord { x: min_x, y: min_y } = acc.min();
+    let Coord {
+        x: omin_x,
+        y: omin_y,
+    } = rect.min();
+    let Coord { x: max_x, y: max_y } = acc.max();
+    let Coord {
+        x: omax_x,
+        y: omax_y,
+    } = rect.max();
+    let nmin = Coord {
+        x: min_x.min(omin_x),
+        y: min_y.min(omin_y),
+    };
+    let nmax = Coord {
+        x: max_x.max(omax_x),
+        y: max_y.max(omax_y),
+    };
+    Rect::new(nmin, nmax)
 }
 
 #[tokio::main]
@@ -91,10 +112,6 @@ async fn main() -> Result<()> {
     for rec in rdr.deserialize() {
         let stop_row: StopRow = rec?;
         let stop = Stop::from(stop_row);
-        if log < 10 {
-            // println!("{:#?}", stop);
-            log += 1;
-        }
         stops.insert(stop.id.clone(), stop);
     }
 
@@ -109,33 +126,43 @@ async fn main() -> Result<()> {
         let boro: Boro = rec?;
         boros.push(boro);
     }
-    let f = boros.first().unwrap();
-    let rect = f.geometry.bounding_rect();
+
     let bounding_rect = boros
         .iter()
         .map(|boro| boro.geometry.bounding_rect().unwrap())
-        .reduce(|acc, rect| {
-            let Coord { x: min_x, y: min_y } = acc.min();
-            let Coord {
-                x: omin_x,
-                y: omin_y,
-            } = rect.min();
-            let Coord { x: max_x, y: max_y } = acc.max();
-            let Coord {
-                x: omax_x,
-                y: omax_y,
-            } = rect.max();
-            let nmin = Coord {
-                x: min_x.min(omin_x),
-                y: min_y.min(omin_y),
-            };
-            let nmax = Coord {
-                x: max_x.max(omax_x),
-                y: max_y.max(omax_y),
-            };
-            Rect::new(nmin, nmax)
-        }).unwrap();
-    println!("{:?}: width: {} height: {}", bounding_rect, f.geometry.bounding_rect().unwrap().width(), f.geometry.bounding_rect().unwrap().height());
+        .reduce(combine_bounding_rect)
+        .unwrap();
+
+    let centroid = bounding_rect.centroid();
+    boros = boros
+        .into_iter()
+        .map(|mut boro| {
+            boro.geometry.map_coords_in_place(|coord| {
+                let point: Point = coord.into();
+                let distance = centroid.haversine_distance(&point);
+                let bearing = centroid.haversine_bearing(point).to_radians();
+                let x = distance * bearing.cos();
+                let y = distance * bearing.sin();
+                Coord { x, y }
+            });
+            boro
+        })
+        .collect();
+
+    let n_br = boros
+        .iter()
+        .map(|boro| boro.geometry.bounding_rect().unwrap())
+        .reduce(combine_bounding_rect)
+        .unwrap();
+
+    let xy_centroid = n_br.centroid();
+    let scale_factor = (1600. * 1200.) / n_br.unsigned_area();
+
+    let mp: Vec<MultiPolygon> = boros.into_iter().map(|boro| {
+        let poly: MultiPolygon = boro.geometry.try_into().unwrap();
+        poly.scale_around_point(scale_factor, scale_factor, xy_centroid)
+    }).collect();
+
     render::run().await;
     Ok(())
 }
