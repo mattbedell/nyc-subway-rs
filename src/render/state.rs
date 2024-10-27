@@ -1,6 +1,7 @@
 use wgpu::util::DeviceExt;
 use winit::event::WindowEvent;
 use winit::window::Window;
+use geo::Coord;
 
 // https://sotrh.github.io/learn-wgpu/beginner/tutorial2-surface/#state-new
 pub struct State<'a> {
@@ -21,6 +22,7 @@ impl<'a> State<'a> {
     // https://sotrh.github.io/learn-wgpu/beginner/tutorial2-surface/#state-new
     pub async fn new(window: &'a Window) -> State<'a> {
         let size = window.inner_size();
+        println!("{:?}", size);
 
         // The instance is a handle to our GPU
         // Backends::all => Vulkan + Metal + DX12 + Browser WebGPU
@@ -114,7 +116,7 @@ impl<'a> State<'a> {
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             }),
             primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList, // 1.
+                topology: wgpu::PrimitiveTopology::LineStrip, // 1.
                 strip_index_format: None,
                 front_face: wgpu::FrontFace::Ccw, // 2.
                 cull_mode: Some(wgpu::Face::Back),
@@ -155,9 +157,9 @@ impl<'a> State<'a> {
             config,
             size,
             clear_color: wgpu::Color {
-                r: 0.1,
-                g: 0.2,
-                b: 0.3,
+                r: 0.05,
+                g: 0.05,
+                b: 0.05,
                 a: 1.0,
             },
             render_pipeline,
@@ -261,16 +263,24 @@ impl Vertex {
     }
 }
 
+impl From<Coord> for Vertex {
+    fn from(value: Coord) -> Self {
+        Vertex {
+            position: [value.x as f32, value.y as f32, 0.0],
+            color: [1.0, 1.0, 1.0],
+        }
+    }
+}
+
 const VERTICES: &[Vertex] = &[
-    Vertex { position: [-0.0868241, 0.49240386, 0.0], color: [0.5, 0.0, 0.5] }, // A
-    Vertex { position: [-0.49513406, 0.06958647, 0.0], color: [0.5, 0.0, 0.5] }, // B
-    Vertex { position: [-0.21918549, -0.44939706, 0.0], color: [0.5, 0.0, 0.5] }, // C
-    Vertex { position: [0.35966998, -0.3473291, 0.0], color: [0.5, 0.0, 0.5] }, // D
-    Vertex { position: [0.44147372, 0.2347359, 0.0], color: [0.5, 0.0, 0.5] }, // E
+    Vertex { position: [-0.0868241, 0.49240386, 0.0], color: [1.0, 1.0, 1.0] }, // A
+    Vertex { position: [-0.49513406, 0.06958647, 0.0], color: [1.0, 1.0, 1.0] }, // B
+    Vertex { position: [-0.21918549, -0.44939706, 0.0], color: [1.0, 1.0, 1.0] }, // C
+    Vertex { position: [0.35966998, -0.3473291, 0.0], color: [1.0, 1.0, 1.0] }, // D
+    Vertex { position: [0.44147372, 0.2347359, 0.0], color: [1.0, 1.0, 1.0] }, // E
 ];
 
 const INDICES: &[u16] = &[
-    0, 1, 4,
-    1, 2, 4,
-    2, 3, 4,
+    0, 1,
+    2, 3,
 ];
