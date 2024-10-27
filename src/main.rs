@@ -6,13 +6,13 @@ use anyhow::Result;
 use env_logger;
 use geo::{self, BoundingRect, Coord, Rect};
 use geojson;
-use proj;
 use serde::{de::Visitor, Deserialize, Deserializer};
 
 use util::static_data::{self, BOROUGH_BOUNDARIES_STATIC, COASTLINE_STATIC, GTFS_STATIC};
 
 mod proto;
 mod util;
+mod render;
 
 #[derive(Debug, nyc_subway_rs_derive::Deserialize_enum_or)]
 enum LocationKind {
@@ -136,5 +136,6 @@ async fn main() -> Result<()> {
             Rect::new(nmin, nmax)
         }).unwrap();
     println!("{:?}: width: {} height: {}", bounding_rect, f.geometry.bounding_rect().unwrap().width(), f.geometry.bounding_rect().unwrap().height());
+    render::run().await;
     Ok(())
 }
