@@ -39,6 +39,7 @@ pub mod static_data {
         } else {
             xdg.get_cache_home()
         };
+        fs::create_dir_all(&outfile_path)?;
         let (static_endpoint, outfile) = endpoint;
         outfile_path.push(outfile);
 
