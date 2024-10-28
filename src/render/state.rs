@@ -14,15 +14,15 @@ pub struct State<'a> {
     clear_color: wgpu::Color,
     render_pipeline: wgpu::RenderPipeline,
     vertex_buffer: wgpu::Buffer,
-    index_buffer: wgpu::Buffer,
-    num_indices: u32,
+    // index_buffer: wgpu::Buffer,
+    // num_indices: u32,
     num_vertices: u32,
-    poly_slices: Vec<u32>,
+    // poly_slices: Vec<u32>,
 }
 
 impl<'a> State<'a> {
     // https://sotrh.github.io/learn-wgpu/beginner/tutorial2-surface/#state-new
-    pub async fn new(window: &'a Window, boros: &[MultiPolygon]) -> State<'a> {
+    pub async fn new(window: &'a Window, boros: &[Vertex]) -> State<'a> {
         let size = window.inner_size();
 
         // The instance is a handle to our GPU
@@ -117,7 +117,7 @@ impl<'a> State<'a> {
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             }),
             primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::LineStrip, // 1.
+                topology: wgpu::PrimitiveTopology::TriangleList, // 1.
                 strip_index_format: None,
                 front_face: wgpu::FrontFace::Ccw, // 2.
                 cull_mode: Some(wgpu::Face::Back),
@@ -138,32 +138,32 @@ impl<'a> State<'a> {
             cache: None,     // 6.
         });
 
-        let bb: Vec<Vertex> = boros[..]
-            .iter()
-            .flat_map(|boro| {
-                boro.coords_iter().map(|c| Vertex {
-                    position: [c.x as f32, c.y as f32, 0.0],
-                    color: [1.0, 1.0, 1.0],
-                })
-            })
-            .collect();
+        // let bb: Vec<Vertex> = boros[..]
+        //     .iter()
+        //     .flat_map(|boro| {
+        //         boro.coords_iter().map(|c| Vertex {
+        //             position: [c.x as f32, c.y as f32, 0.0],
+        //             color: [1.0, 1.0, 1.0],
+        //         })
+        //     })
+        //     .collect();
 
-        let poly_slices: Vec<u32> = boros[..].iter().flat_map(|boro| {
-            boro.iter().map(|f| f.coords_count() as u32)
-        }).collect();
+        // let poly_slices: Vec<u32> = boros[..].iter().flat_map(|boro| {
+        //     boro.iter().map(|f| f.coords_count() as u32)
+        // }).collect();
 
 
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Vertex Buffer"),
-            contents: bytemuck::cast_slice(&bb[..]),
+            contents: bytemuck::cast_slice(&boros[..]),
             usage: wgpu::BufferUsages::VERTEX,
         });
 
-        let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Index Buffer"),
-            contents: bytemuck::cast_slice(&bb[..]),
-            usage: wgpu::BufferUsages::INDEX,
-        });
+        // let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        //     label: Some("Index Buffer"),
+        //     contents: bytemuck::cast_slice(&bb[..]),
+        //     usage: wgpu::BufferUsages::INDEX,
+        // });
 
         Self {
             window,
@@ -180,10 +180,10 @@ impl<'a> State<'a> {
             },
             render_pipeline,
             vertex_buffer,
-            index_buffer,
-            num_indices: INDICES.len() as u32,
-            num_vertices: bb.len() as u32,
-            poly_slices,
+            // index_buffer,
+            // num_indices: INDICES.len() as u32,
+            num_vertices: boros.len() as u32,
+            // poly_slices,
         }
     }
 
@@ -251,13 +251,15 @@ impl<'a> State<'a> {
 
             render_pass.set_pipeline(&self.render_pipeline);
             render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-            let mut last_idx = 0;
+            render_pass.draw(0..self.num_vertices, 0..1);
+            // let mut last_idx = 0;
             // println!("RANGE {:?} TOTAL: {:?}", self.poly_slices, self.num_vertices);
-            for idx in &self.poly_slices {
-                let next_idx = last_idx + idx;
-                render_pass.draw(last_idx..next_idx, 0..1);
-                last_idx = next_idx;
-            }
+            // for idx in &self.poly_slices {
+            //     let next_idx = last_idx + idx;
+            //     render_pass.draw(last_idx..next_idx, 0..1);
+            //     last_idx = next_idx;
+            // }
+
 
                 // render_pass.draw(0..self.num_vertices, 0..1);
             // render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
@@ -272,7 +274,7 @@ impl<'a> State<'a> {
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
-struct Vertex {
+pub struct Vertex {
     position: [f32; 3],
     color: [f32; 3],
 }

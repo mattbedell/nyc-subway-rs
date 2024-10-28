@@ -12,13 +12,14 @@ use winit::{
 use anyhow::Result;
 use env_logger;
 use geo::{
-    self, Area, BoundingRect, Centroid, Coord, CoordinatePosition, CoordsIter, HausdorffDistance,
-    HaversineBearing, HaversineDistance, LineString, MapCoords, MapCoordsInPlace, MultiPolygon,
-    Point, Rect, Scale,
+    self, triangulate_earcut::RawTriangulation, Area, BoundingRect, Centroid, Coord,
+    CoordinatePosition, CoordsIter, HausdorffDistance, HaversineBearing, HaversineDistance,
+    LineString, MapCoords, MapCoordsInPlace, MultiPolygon, Point, Rect, Scale, TriangulateEarcut,
 };
 use geojson;
 use serde::{de::Visitor, Deserialize, Deserializer};
 
+use render::Vertex;
 use util::static_data::{self, BOROUGH_BOUNDARIES_STATIC, COASTLINE_STATIC, GTFS_STATIC};
 
 mod proto;
@@ -71,28 +72,6 @@ struct Boro {
     geometry: geo::geometry::Geometry,
 }
 
-fn combine_bounding_rect(acc: Rect, rect: Rect) -> Rect {
-    let Coord { x: min_x, y: min_y } = acc.min();
-    let Coord {
-        x: omin_x,
-        y: omin_y,
-    } = rect.min();
-    let Coord { x: max_x, y: max_y } = acc.max();
-    let Coord {
-        x: omax_x,
-        y: omax_y,
-    } = rect.max();
-    let nmin = Coord {
-        x: min_x.min(omin_x),
-        y: min_y.min(omin_y),
-    };
-    let nmax = Coord {
-        x: max_x.max(omax_x),
-        y: max_y.max(omax_y),
-    };
-    Rect::new(nmin, nmax)
-}
-
 #[tokio::main]
 async fn main() -> Result<()> {
     env_logger::init();
@@ -116,8 +95,6 @@ async fn main() -> Result<()> {
 
     let mut stops: HashMap<String, Stop> = HashMap::new();
 
-    let mut log = 0;
-
     for rec in rdr.deserialize() {
         let stop_row: StopRow = rec?;
         let stop = Stop::from(stop_row);
@@ -139,21 +116,15 @@ async fn main() -> Result<()> {
     let bounding_rect = boros
         .iter()
         .map(|boro| boro.geometry.bounding_rect().unwrap())
-        .reduce(combine_bounding_rect)
+        .reduce(util::geo::combine_bounding_rect)
         .unwrap();
 
     let centroid = bounding_rect.centroid();
     boros = boros
         .into_iter()
         .map(|mut boro| {
-            boro.geometry.map_coords_in_place(|coord| {
-                let point: Point = coord.into();
-                let distance = centroid.haversine_distance(&point);
-                let bearing = centroid.haversine_bearing(point).to_radians();
-                let x = (distance * bearing.cos());
-                let y = (distance * bearing.sin());
-                Coord { x, y }
-            });
+            boro.geometry
+                .map_coords_in_place(|coord| util::geo::coord_to_xy(coord, centroid));
             boro
         })
         .collect();
@@ -161,7 +132,7 @@ async fn main() -> Result<()> {
     let n_br = boros
         .iter()
         .map(|boro| boro.geometry.bounding_rect().unwrap())
-        .reduce(combine_bounding_rect)
+        .reduce(util::geo::combine_bounding_rect)
         .unwrap();
 
     let event_loop = EventLoop::new().unwrap();
@@ -170,36 +141,41 @@ async fn main() -> Result<()> {
     let window_area = (window_size.width as f64 * window_size.height as f64);
     let scale_factor = window_area / (n_br.unsigned_area() * 20.);
 
-    let zero: Point = Coord {x: 0., y: 0. }.into();
+    let zero: Point = Coord { x: 0., y: 0. }.into();
     boros = boros
         .into_iter()
         .map(|mut boro| {
-            boro.geometry.scale_around_point_mut(scale_factor, scale_factor, zero);
+            boro.geometry
+                .scale_around_point_mut(scale_factor, scale_factor, zero);
             boro
         })
         .collect();
 
-
     let xy_centroid = n_br.centroid();
 
-    let mp: Vec<MultiPolygon> = boros
+    let mp: Vec<Vertex> = boros
         .into_iter()
-        .map(|boro| {
+        .flat_map(|boro| {
             let poly: MultiPolygon = boro.geometry.try_into().unwrap();
+            poly.into_iter().flat_map(|p| {
+                p.earcut_triangles()
+                    .into_iter()
+                    .flat_map(|tri| tri.coords_iter().map(|coord| Vertex::from(coord)))
+            })
+            // let tri = poly.iter().map(|p| p.earcut_triangles_raw());
             // poly.scale_around_point(scale_factor, scale_factor, xy_centroid)
             // poly.scale(scale_factor / 1000.)
-            poly
         })
         .collect();
 
-    println!(
-        "{:?} {:?} {:?} {:?} {:?}",
-        &mp[0].coords_iter().collect::<Vec<Coord>>()[0..6],
-        scale_factor,
-        window_area,
-        n_br.unsigned_area(),
-        xy_centroid,
-    );
+    // println!(
+    //     "{:?} {:?} {:?} {:?} {:?}",
+    //     &mp[0].coords_iter().collect::<Vec<Coord>>()[0..6],
+    //     scale_factor,
+    //     window_area,
+    //     n_br.unsigned_area(),
+    //     xy_centroid,
+    // );
     let mut state = render::State::new(&window, &mp[..]).await;
 
     event_loop.run(move |event, control_flow| match event {
