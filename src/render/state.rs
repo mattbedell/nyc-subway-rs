@@ -17,6 +17,7 @@ pub struct State<'a> {
     index_buffer: wgpu::Buffer,
     num_indices: u32,
     num_vertices: u32,
+    poly_slices: Vec<u32>,
 }
 
 impl<'a> State<'a> {
@@ -140,12 +141,17 @@ impl<'a> State<'a> {
         let bb: Vec<Vertex> = boros[..]
             .iter()
             .flat_map(|boro| {
-                boro.exterior_coords_iter().map(|c| Vertex {
+                boro.coords_iter().map(|c| Vertex {
                     position: [c.x as f32, c.y as f32, 0.0],
                     color: [1.0, 1.0, 1.0],
                 })
             })
             .collect();
+
+        let poly_slices: Vec<u32> = boros[..].iter().flat_map(|boro| {
+            boro.iter().map(|f| f.coords_count() as u32)
+        }).collect();
+
 
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Vertex Buffer"),
@@ -177,6 +183,7 @@ impl<'a> State<'a> {
             index_buffer,
             num_indices: INDICES.len() as u32,
             num_vertices: bb.len() as u32,
+            poly_slices,
         }
     }
 
@@ -241,11 +248,20 @@ impl<'a> State<'a> {
                 occlusion_query_set: None,
                 timestamp_writes: None,
             });
+
             render_pass.set_pipeline(&self.render_pipeline);
             render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+            let mut last_idx = 0;
+            // println!("RANGE {:?} TOTAL: {:?}", self.poly_slices, self.num_vertices);
+            for idx in &self.poly_slices {
+                let next_idx = last_idx + idx;
+                render_pass.draw(last_idx..next_idx, 0..1);
+                last_idx = next_idx;
+            }
+
+                // render_pass.draw(0..self.num_vertices, 0..1);
             // render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
             // render_pass.draw_indexed(0..self.num_indices, 0, 0..1);
-            render_pass.draw(0..self.num_vertices, 0..1)
         }
         self.queue.submit(std::iter::once(encoder.finish()));
         output.present();
