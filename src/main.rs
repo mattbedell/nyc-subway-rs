@@ -1,4 +1,3 @@
-use std::cmp;
 use std::collections::HashMap;
 use std::fmt::Formatter;
 
@@ -12,14 +11,13 @@ use winit::{
 use anyhow::Result;
 use env_logger;
 use geo::{
-    self, triangulate_earcut::RawTriangulation, Area, BoundingRect, Centroid, Coord,
-    CoordinatePosition, CoordsIter, HausdorffDistance, HaversineBearing, HaversineDistance,
-    LineString, MapCoords, MapCoordsInPlace, MultiPolygon, Point, Rect, Scale, TriangulateEarcut,
+    self, BoundingRect, Coord, CoordsIter, GeometryCollection, MapCoords, MultiPolygon, Point,
+    Rect, Translate, TriangulateEarcut,
 };
 use geojson;
 use serde::{de::Visitor, Deserialize, Deserializer};
 
-use render::Vertex;
+use render::{CameraUniform, Vertex};
 use util::static_data::{self, BOROUGH_BOUNDARIES_STATIC, COASTLINE_STATIC, GTFS_STATIC};
 
 mod proto;
@@ -67,7 +65,6 @@ struct StopRow {
 
 #[derive(Debug, Deserialize)]
 struct Boro {
-    boro_name: String,
     #[serde(deserialize_with = "geojson::de::deserialize_geometry")]
     geometry: geo::geometry::Geometry,
 }
@@ -108,77 +105,46 @@ async fn main() -> Result<()> {
     };
 
     let mut boros: Vec<Boro> = Vec::new();
+    let mut boro_geo: Vec<geo::Geometry> = Vec::new();
     for rec in feature_reader.deserialize().unwrap() {
         let boro: Boro = rec?;
+        boro_geo.push(boro.geometry.to_owned());
         boros.push(boro);
     }
 
-    let bounding_rect = boros
-        .iter()
-        .map(|boro| boro.geometry.bounding_rect().unwrap())
-        .reduce(util::geo::combine_bounding_rect)
-        .unwrap();
-
-    let centroid = bounding_rect.centroid();
-    boros = boros
-        .into_iter()
-        .map(|mut boro| {
-            boro.geometry
-                .map_coords_in_place(|coord| util::geo::coord_to_xy(coord, centroid));
-            boro
-        })
-        .collect();
-
-    let n_br = boros
-        .iter()
-        .map(|boro| boro.geometry.bounding_rect().unwrap())
-        .reduce(util::geo::combine_bounding_rect)
-        .unwrap();
-
     let event_loop = EventLoop::new().unwrap();
     let window = WindowBuilder::new().build(&event_loop).unwrap();
-    let window_size = window.inner_size();
-    let window_area = (window_size.width as f64 * window_size.height as f64);
-    let scale_factor = window_area / (n_br.unsigned_area() * 20.);
 
-    let zero: Point = Coord { x: 0., y: 0. }.into();
-    boros = boros
+    let mut geoc = GeometryCollection(boro_geo);
+    let o_center: Point = geoc.bounding_rect().unwrap().center().into();
+    geoc = geoc.map_coords(|coord| util::geo::coord_to_xy(coord, o_center));
+
+    let vp_br = geoc.bounding_rect().unwrap();
+    let mut viewport = Rect::new(
+        Coord::zero(),
+        Coord {
+            x: vp_br.height().max(vp_br.width()),
+            y: vp_br.height().max(vp_br.width()),
+        },
+    );
+    viewport.translate_mut(viewport.center().x * -1., viewport.center().y * -1.);
+
+    let camera_uniform = CameraUniform::new(viewport);
+    let mp: Vec<Vertex> = geoc
         .into_iter()
-        .map(|mut boro| {
-            boro.geometry
-                .scale_around_point_mut(scale_factor, scale_factor, zero);
-            boro
-        })
-        .collect();
-
-    let xy_centroid = n_br.centroid();
-
-    let mp: Vec<Vertex> = boros
-        .into_iter()
-        .flat_map(|boro| {
-            let poly: MultiPolygon = boro.geometry.try_into().unwrap();
+        .flat_map(|geo| {
+            let poly: MultiPolygon = geo.try_into().unwrap();
             poly.into_iter().flat_map(|p| {
                 p.earcut_triangles()
                     .into_iter()
                     .flat_map(|tri| tri.coords_iter().map(|coord| Vertex::from(coord)))
             })
-            // let tri = poly.iter().map(|p| p.earcut_triangles_raw());
-            // poly.scale_around_point(scale_factor, scale_factor, xy_centroid)
-            // poly.scale(scale_factor / 1000.)
         })
         .collect();
 
-    // println!(
-    //     "{:?} {:?} {:?} {:?} {:?}",
-    //     &mp[0].coords_iter().collect::<Vec<Coord>>()[0..6],
-    //     scale_factor,
-    //     window_area,
-    //     n_br.unsigned_area(),
-    //     xy_centroid,
-    // );
-    let mut state = render::State::new(&window, &mp[..]).await;
+    let mut state = render::State::new(&window, camera_uniform, &mp[..]).await;
 
-    event_loop.run(move |event, control_flow| match event {
+    let _ = event_loop.run(move |event, control_flow| match event {
         Event::WindowEvent {
             ref event,
             window_id,

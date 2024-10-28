@@ -1,5 +1,6 @@
-use geo::{Coord, CoordsIter, MultiPolygon};
+use geo::{Coord, Rect};
 use wgpu::util::DeviceExt;
+use wgpu::Buffer;
 use winit::event::WindowEvent;
 use winit::window::Window;
 
@@ -14,6 +15,8 @@ pub struct State<'a> {
     clear_color: wgpu::Color,
     render_pipeline: wgpu::RenderPipeline,
     vertex_buffer: wgpu::Buffer,
+    camera_buffer: wgpu::Buffer,
+    camera_bind_group: wgpu::BindGroup,
     // index_buffer: wgpu::Buffer,
     // num_indices: u32,
     num_vertices: u32,
@@ -22,7 +25,7 @@ pub struct State<'a> {
 
 impl<'a> State<'a> {
     // https://sotrh.github.io/learn-wgpu/beginner/tutorial2-surface/#state-new
-    pub async fn new(window: &'a Window, boros: &[Vertex]) -> State<'a> {
+    pub async fn new(window: &'a Window, camera: CameraUniform, boros: &[Vertex]) -> State<'a> {
         let size = window.inner_size();
 
         // The instance is a handle to our GPU
@@ -88,10 +91,36 @@ impl<'a> State<'a> {
 
         let shader = device.create_shader_module(wgpu::include_wgsl!("shader.wgsl"));
 
+        let camera_buffer = camera.into_buffer(&device);
+
+        let camera_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("camera_bind_group_layout"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }],
+            });
+
+        let camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &camera_bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: camera_buffer.as_entire_binding(),
+            }],
+            label: Some("camera_bind_group"),
+        });
+
         let render_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Render Pipeline Layout"),
-                bind_group_layouts: &[],
+                bind_group_layouts: &[&camera_bind_group_layout],
                 push_constant_ranges: &[],
             });
 
@@ -152,7 +181,6 @@ impl<'a> State<'a> {
         //     boro.iter().map(|f| f.coords_count() as u32)
         // }).collect();
 
-
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Vertex Buffer"),
             contents: bytemuck::cast_slice(&boros[..]),
@@ -180,6 +208,8 @@ impl<'a> State<'a> {
             },
             render_pipeline,
             vertex_buffer,
+            camera_buffer,
+            camera_bind_group,
             // index_buffer,
             // num_indices: INDICES.len() as u32,
             num_vertices: boros.len() as u32,
@@ -250,6 +280,7 @@ impl<'a> State<'a> {
             });
 
             render_pass.set_pipeline(&self.render_pipeline);
+            render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
             render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
             render_pass.draw(0..self.num_vertices, 0..1);
             // let mut last_idx = 0;
@@ -260,8 +291,7 @@ impl<'a> State<'a> {
             //     last_idx = next_idx;
             // }
 
-
-                // render_pass.draw(0..self.num_vertices, 0..1);
+            // render_pass.draw(0..self.num_vertices, 0..1);
             // render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
             // render_pass.draw_indexed(0..self.num_indices, 0, 0..1);
         }
@@ -269,6 +299,32 @@ impl<'a> State<'a> {
         output.present();
 
         Ok(())
+    }
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct CameraUniform {
+    width: f32,
+    height: f32,
+    min: [f32; 2],
+}
+
+impl CameraUniform {
+    pub fn new(rect: Rect) -> Self {
+        Self {
+            width: rect.width() as f32,
+            height: rect.height() as f32,
+            min: [rect.min().x as f32, rect.min().y as f32],
+        }
+    }
+
+    pub fn into_buffer(self, device: &wgpu::Device) -> Buffer {
+        device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Camera Buffer"),
+            contents: bytemuck::cast_slice(&[self]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        })
     }
 }
 
