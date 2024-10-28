@@ -1,7 +1,7 @@
+use geo::{Coord, CoordsIter, MultiPolygon};
 use wgpu::util::DeviceExt;
 use winit::event::WindowEvent;
 use winit::window::Window;
-use geo::Coord;
 
 // https://sotrh.github.io/learn-wgpu/beginner/tutorial2-surface/#state-new
 pub struct State<'a> {
@@ -16,13 +16,13 @@ pub struct State<'a> {
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
     num_indices: u32,
+    num_vertices: u32,
 }
 
 impl<'a> State<'a> {
     // https://sotrh.github.io/learn-wgpu/beginner/tutorial2-surface/#state-new
-    pub async fn new(window: &'a Window) -> State<'a> {
+    pub async fn new(window: &'a Window, boros: &[MultiPolygon]) -> State<'a> {
         let size = window.inner_size();
-        println!("{:?}", size);
 
         // The instance is a handle to our GPU
         // Backends::all => Vulkan + Metal + DX12 + Browser WebGPU
@@ -137,15 +137,25 @@ impl<'a> State<'a> {
             cache: None,     // 6.
         });
 
+        let bb: Vec<Vertex> = boros[..]
+            .iter()
+            .flat_map(|boro| {
+                boro.exterior_coords_iter().map(|c| Vertex {
+                    position: [c.x as f32, c.y as f32, 0.0],
+                    color: [1.0, 1.0, 1.0],
+                })
+            })
+            .collect();
+
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Vertex Buffer"),
-            contents: bytemuck::cast_slice(VERTICES),
+            contents: bytemuck::cast_slice(&bb[..]),
             usage: wgpu::BufferUsages::VERTEX,
         });
 
         let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Index Buffer"),
-            contents: bytemuck::cast_slice(INDICES),
+            contents: bytemuck::cast_slice(&bb[..]),
             usage: wgpu::BufferUsages::INDEX,
         });
 
@@ -166,6 +176,7 @@ impl<'a> State<'a> {
             vertex_buffer,
             index_buffer,
             num_indices: INDICES.len() as u32,
+            num_vertices: bb.len() as u32,
         }
     }
 
@@ -232,8 +243,9 @@ impl<'a> State<'a> {
             });
             render_pass.set_pipeline(&self.render_pipeline);
             render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-            render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
-            render_pass.draw_indexed(0..self.num_indices, 0, 0..1);
+            // render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+            // render_pass.draw_indexed(0..self.num_indices, 0, 0..1);
+            render_pass.draw(0..self.num_vertices, 0..1)
         }
         self.queue.submit(std::iter::once(encoder.finish()));
         output.present();
@@ -273,14 +285,26 @@ impl From<Coord> for Vertex {
 }
 
 const VERTICES: &[Vertex] = &[
-    Vertex { position: [-0.0868241, 0.49240386, 0.0], color: [1.0, 1.0, 1.0] }, // A
-    Vertex { position: [-0.49513406, 0.06958647, 0.0], color: [1.0, 1.0, 1.0] }, // B
-    Vertex { position: [-0.21918549, -0.44939706, 0.0], color: [1.0, 1.0, 1.0] }, // C
-    Vertex { position: [0.35966998, -0.3473291, 0.0], color: [1.0, 1.0, 1.0] }, // D
-    Vertex { position: [0.44147372, 0.2347359, 0.0], color: [1.0, 1.0, 1.0] }, // E
+    Vertex {
+        position: [-0.0868241, 0.49240386, 0.0],
+        color: [1.0, 1.0, 1.0],
+    }, // A
+    Vertex {
+        position: [-0.49513406, 0.06958647, 0.0],
+        color: [1.0, 1.0, 1.0],
+    }, // B
+    Vertex {
+        position: [-0.21918549, -0.44939706, 0.0],
+        color: [1.0, 1.0, 1.0],
+    }, // C
+    Vertex {
+        position: [0.35966998, -0.3473291, 0.0],
+        color: [1.0, 1.0, 1.0],
+    }, // D
+    Vertex {
+        position: [0.44147372, 0.2347359, 0.0],
+        color: [1.0, 1.0, 1.0],
+    }, // E
 ];
 
-const INDICES: &[u16] = &[
-    0, 1,
-    2, 3,
-];
+const INDICES: &[u16] = &[0, 1, 2, 3];

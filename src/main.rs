@@ -2,10 +2,19 @@ use std::cmp;
 use std::collections::HashMap;
 use std::fmt::Formatter;
 
+use winit::{
+    event::*,
+    event_loop::EventLoop,
+    keyboard::{KeyCode, PhysicalKey},
+    window::WindowBuilder,
+};
+
 use anyhow::Result;
 use env_logger;
 use geo::{
-    self, Area, BoundingRect, Centroid, Coord, HausdorffDistance, HaversineBearing, HaversineDistance, LineString, MapCoords, MapCoordsInPlace, MultiPolygon, Point, Rect, Scale
+    self, Area, BoundingRect, Centroid, Coord, CoordinatePosition, CoordsIter, HausdorffDistance,
+    HaversineBearing, HaversineDistance, LineString, MapCoords, MapCoordsInPlace, MultiPolygon,
+    Point, Rect, Scale,
 };
 use geojson;
 use serde::{de::Visitor, Deserialize, Deserializer};
@@ -141,8 +150,8 @@ async fn main() -> Result<()> {
                 let point: Point = coord.into();
                 let distance = centroid.haversine_distance(&point);
                 let bearing = centroid.haversine_bearing(point).to_radians();
-                let x = distance * bearing.cos();
-                let y = distance * bearing.sin();
+                let x = (distance * bearing.cos());
+                let y = (distance * bearing.sin());
                 Coord { x, y }
             });
             boro
@@ -155,14 +164,95 @@ async fn main() -> Result<()> {
         .reduce(combine_bounding_rect)
         .unwrap();
 
+    let event_loop = EventLoop::new().unwrap();
+    let window = WindowBuilder::new().build(&event_loop).unwrap();
+    let window_size = window.inner_size();
+    let window_area = (window_size.width as f64 * window_size.height as f64);
+    let scale_factor = window_area / (n_br.unsigned_area() * 20.);
+
+    let zero: Point = Coord {x: 0., y: 0. }.into();
+    boros = boros
+        .into_iter()
+        .map(|mut boro| {
+            boro.geometry.scale_around_point_mut(scale_factor, scale_factor, zero);
+            boro
+        })
+        .collect();
+
+
     let xy_centroid = n_br.centroid();
-    let scale_factor = (1600. * 1200.) / n_br.unsigned_area();
 
-    let mp: Vec<MultiPolygon> = boros.into_iter().map(|boro| {
-        let poly: MultiPolygon = boro.geometry.try_into().unwrap();
-        poly.scale_around_point(scale_factor, scale_factor, xy_centroid)
-    }).collect();
+    let mp: Vec<MultiPolygon> = boros
+        .into_iter()
+        .map(|boro| {
+            let poly: MultiPolygon = boro.geometry.try_into().unwrap();
+            // poly.scale_around_point(scale_factor, scale_factor, xy_centroid)
+            // poly.scale(scale_factor / 1000.)
+            poly
+        })
+        .collect();
 
-    render::run().await;
+    println!(
+        "{:?} {:?} {:?} {:?} {:?}",
+        &mp[0].coords_iter().collect::<Vec<Coord>>()[0..6],
+        scale_factor,
+        window_area,
+        n_br.unsigned_area(),
+        xy_centroid,
+    );
+    let mut state = render::State::new(&window, &mp[..]).await;
+
+    event_loop.run(move |event, control_flow| match event {
+        Event::WindowEvent {
+            ref event,
+            window_id,
+        } if window_id == state.window().id() => {
+            if !state.input(event) {
+                match event {
+                    WindowEvent::CloseRequested
+                    | WindowEvent::KeyboardInput {
+                        event:
+                            KeyEvent {
+                                state: ElementState::Pressed,
+                                physical_key: PhysicalKey::Code(KeyCode::Escape),
+                                ..
+                            },
+                        ..
+                    } => control_flow.exit(),
+                    WindowEvent::Resized(physical_size) => {
+                        state.resize(*physical_size);
+                    }
+                    WindowEvent::RedrawRequested => {
+                        state.window().request_redraw();
+
+                        // if !surface_configured {
+                        //     return;
+                        // }
+
+                        state.update();
+                        match state.render() {
+                            Ok(_) => {}
+                            // Reconfigure the surface if it's lost or outdated
+                            Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
+                                state.resize(state.size)
+                            }
+                            // The system is out of memory, we should probably quit
+                            Err(wgpu::SurfaceError::OutOfMemory) => {
+                                log::error!("OutOfMemory");
+                                control_flow.exit();
+                            }
+
+                            // This happens when the a frame takes too long to present
+                            Err(wgpu::SurfaceError::Timeout) => {
+                                log::warn!("Surface timeout")
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        _ => {}
+    });
     Ok(())
 }
