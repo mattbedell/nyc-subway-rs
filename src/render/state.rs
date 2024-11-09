@@ -22,9 +22,6 @@ pub struct State<'a> {
     geo_vertex_buffer: wgpu::Buffer,
     geo_index_buffer: wgpu::Buffer,
     geo_range: Range<u32>,
-    // index_buffer: wgpu::Buffer,
-    // num_indices: u32,
-    // poly_slices: Vec<u32>,
 }
 
 impl<'a> State<'a> {
@@ -37,8 +34,6 @@ impl<'a> State<'a> {
     ) -> State<'a> {
         let size = window.inner_size();
 
-        // The instance is a handle to our GPU
-        // Backends::all => Vulkan + Metal + DX12 + Browser WebGPU
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             #[cfg(not(target_arch = "wasm32"))]
             backends: wgpu::Backends::PRIMARY,
@@ -62,8 +57,6 @@ impl<'a> State<'a> {
             .request_device(
                 &wgpu::DeviceDescriptor {
                     required_features: wgpu::Features::empty(),
-                    // WebGL doesn't support all of wgpu's features, so if
-                    // we're building for the web, we'll have to disable some.
                     required_limits: if cfg!(target_arch = "wasm32") {
                         wgpu::Limits::downlevel_webgl2_defaults()
                     } else {
@@ -72,15 +65,12 @@ impl<'a> State<'a> {
                     label: None,
                     memory_hints: Default::default(),
                 },
-                None, // Trace path
+                None,
             )
             .await
             .unwrap();
 
         let surface_caps = surface.get_capabilities(&adapter);
-        // Shader code in this tutorial assumes an sRGB surface texture. Using a different
-        // one will result in all the colors coming out darker. If you want to support non
-        // sRGB surfaces, you'll need to account for that when drawing to the frame.
         let surface_format = surface_caps
             .formats
             .iter()
@@ -155,82 +145,23 @@ impl<'a> State<'a> {
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             }),
             primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList, // 1.
+                topology: wgpu::PrimitiveTopology::TriangleList,
                 strip_index_format: None,
-                front_face: wgpu::FrontFace::Ccw, // 2.
+                front_face: wgpu::FrontFace::Ccw,
                 cull_mode: Some(wgpu::Face::Back),
-                // Setting this to anything other than Fill requires Features::NON_FILL_POLYGON_MODE
                 polygon_mode: wgpu::PolygonMode::Fill,
-                // Requires Features::DEPTH_CLIP_CONTROL
                 unclipped_depth: false,
-                // Requires Features::CONSERVATIVE_RASTERIZATION
                 conservative: false,
             },
-            depth_stencil: None, // 1.
+            depth_stencil: None,
             multisample: wgpu::MultisampleState {
-                count: 1,                         // 2.
-                mask: !0,                         // 3.
-                alpha_to_coverage_enabled: false, // 4.
+                count: 1,
+                mask: !0,
+                alpha_to_coverage_enabled: false,
             },
-            multiview: None, // 5.
-            cache: None,     // 6.
+            multiview: None,
+            cache: None,
         });
-        let shape_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Shape Pipeline"),
-            layout: Some(&render_pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: "vs_main",     // 1.
-                buffers: &[Vertex::desc()], // 2.
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                // 3.
-                module: &shader,
-                entry_point: "fs_main",
-                targets: &[Some(wgpu::ColorTargetState {
-                    // 4.
-                    format: config.format,
-                    blend: Some(wgpu::BlendState::REPLACE),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::LineStrip, // 1.
-                strip_index_format: None,
-                front_face: wgpu::FrontFace::Ccw, // 2.
-                cull_mode: Some(wgpu::Face::Back),
-                // Setting this to anything other than Fill requires Features::NON_FILL_POLYGON_MODE
-                polygon_mode: wgpu::PolygonMode::Fill,
-                // Requires Features::DEPTH_CLIP_CONTROL
-                unclipped_depth: false,
-                // Requires Features::CONSERVATIVE_RASTERIZATION
-                conservative: false,
-            },
-            depth_stencil: None, // 1.
-            multisample: wgpu::MultisampleState {
-                count: 1,                         // 2.
-                mask: !0,                         // 3.
-                alpha_to_coverage_enabled: false, // 4.
-            },
-            multiview: None, // 5.
-            cache: None,     // 6.
-        });
-
-        // let bb: Vec<Vertex> = boros[..]
-        //     .iter()
-        //     .flat_map(|boro| {
-        //         boro.coords_iter().map(|c| Vertex {
-        //             position: [c.x as f32, c.y as f32, 0.0],
-        //             color: [1.0, 1.0, 1.0],
-        //         })
-        //     })
-        //     .collect();
-
-        // let poly_slices: Vec<u32> = boros[..].iter().flat_map(|boro| {
-        //     boro.iter().map(|f| f.coords_count() as u32)
-        // }).collect();
 
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Vertex Buffer"),
@@ -249,11 +180,6 @@ impl<'a> State<'a> {
             contents: bytemuck::cast_slice(&geo.indices[..]),
             usage: wgpu::BufferUsages::INDEX,
         });
-        // let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        //     label: Some("Index Buffer"),
-        //     contents: bytemuck::cast_slice(&bb[..]),
-        //     usage: wgpu::BufferUsages::INDEX,
-        // });
 
         Self {
             window,
@@ -276,9 +202,6 @@ impl<'a> State<'a> {
             geo_vertex_buffer,
             geo_index_buffer,
             geo_range: 0..geo.indices.len() as u32,
-            // index_buffer,
-            // num_indices: INDICES.len() as u32,
-            // poly_slices,
         }
     }
 
@@ -286,7 +209,6 @@ impl<'a> State<'a> {
         &self.window
     }
 
-    // impl State
     pub fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
         if new_size.width > 0 && new_size.height > 0 {
             self.size = new_size;
@@ -353,17 +275,6 @@ impl<'a> State<'a> {
             render_pass.set_vertex_buffer(0, self.geo_vertex_buffer.slice(..));
             render_pass.set_index_buffer(self.geo_index_buffer.slice(..), wgpu::IndexFormat::Uint32);
             render_pass.draw_indexed(self.geo_range.clone(), 0, 0..1);
-            // let mut last_idx = 0;
-            // println!("RANGE {:?} TOTAL: {:?}", self.poly_slices, self.num_vertices);
-            // for idx in &self.poly_slices {
-            //     let next_idx = last_idx + idx;
-            //     render_pass.draw(last_idx..next_idx, 0..1);
-            //     last_idx = next_idx;
-            // }
-
-            // render_pass.draw(0..self.num_vertices, 0..1);
-            // render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
-            // render_pass.draw_indexed(0..self.num_indices, 0, 0..1);
         }
         self.queue.submit(std::iter::once(encoder.finish()));
         output.present();
@@ -381,11 +292,11 @@ pub struct CameraUniform {
 }
 
 impl CameraUniform {
-    pub fn new(rect: Rect) -> Self {
+    pub fn new(rect: Rect<f32>) -> Self {
         Self {
-            width: rect.width() as f32,
-            height: rect.height() as f32,
-            min: [rect.min().x as f32, rect.min().y as f32],
+            width: rect.width(),
+            height: rect.height(),
+            min: [rect.min().x, rect.min().y],
         }
     }
 
@@ -412,7 +323,7 @@ impl Vertex {
     const ATTRIBS: [wgpu::VertexAttribute; 4] =
         wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x3, 3 => Float32];
 
-    pub fn new(coord: Coord, color: [f32; 3]) -> Self {
+    pub fn new(coord: Coord<f32>, color: [f32; 3]) -> Self {
         Self {
             color,
             ..Self::from(coord)
@@ -428,20 +339,10 @@ impl Vertex {
     }
 }
 
-// impl FromIterator<&Coord> for Vec<Vertex> {
-//     fn from_iter<T: IntoIterator<Item = &Coord>>(iter: T) -> Self {
-//         let mut v: Vec<Vertex> = Vec::new();
-//         for c in iter {
-//             v.push(Vertex::from(c));
-//         }
-//         v
-//     }
-// }
-
-impl From<Coord> for Vertex {
-    fn from(value: Coord) -> Self {
+impl From<Coord<f32>> for Vertex {
+    fn from(value: Coord<f32>) -> Self {
         Vertex {
-            position: [value.x as f32, value.y as f32, 0.0],
+            position: [value.x, value.y, 0.0],
             color: [0.3, 0.3, 0.3],
             normal: [0.0, 0.0, 0.0],
             miter: 0.,
@@ -459,28 +360,3 @@ impl From<&Coord> for Vertex {
         }
     }
 }
-
-// const VERTICES: &[Vertex] = &[
-//     Vertex {
-//         position: [-0.0868241, 0.49240386, 0.0],
-//         color: [1.0, 1.0, 1.0],
-//     }, // A
-//     Vertex {
-//         position: [-0.49513406, 0.06958647, 0.0],
-//         color: [1.0, 1.0, 1.0],
-//     }, // B
-//     Vertex {
-//         position: [-0.21918549, -0.44939706, 0.0],
-//         color: [1.0, 1.0, 1.0],
-//     }, // C
-//     Vertex {
-//         position: [0.35966998, -0.3473291, 0.0],
-//         color: [1.0, 1.0, 1.0],
-//     }, // D
-//     Vertex {
-//         position: [0.44147372, 0.2347359, 0.0],
-//         color: [1.0, 1.0, 1.0],
-//     }, // E
-// ];
-
-// const INDICES: &[u16] = &[0, 1, 2, 3];

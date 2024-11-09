@@ -1,11 +1,14 @@
 use crate::util;
 use anyhow::Result;
-use geo::{self, BoundingRect, Coord, GeometryCollection, MapCoords, Translate};
+use geo::{self, BoundingRect, GeometryCollection, MapCoords, Translate};
 use serde::{de::Visitor, Deserialize, Deserializer};
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Formatter;
 use std::ops::{Deref, DerefMut};
 use util::static_data::BOROUGH_BOUNDARIES_STATIC;
+
+type Coord = geo::Coord<f32>;
+type Point = geo::Point<f32>;
 
 #[derive(Debug, nyc_subway_rs_derive::Deserialize_enum_or)]
 enum LocationKind {
@@ -27,14 +30,14 @@ struct StopRow {
 struct ShapeRow {
     shape_id: String,
     shape_pt_sequence: usize,
-    shape_pt_lat: f64,
-    shape_pt_lon: f64,
+    shape_pt_lat: f32,
+    shape_pt_lon: f32,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct Boro {
     #[serde(deserialize_with = "geojson::de::deserialize_geometry")]
-    geometry: geo::geometry::Geometry,
+    geometry: geo::geometry::Geometry<f32>,
 }
 
 pub struct Stop {
@@ -68,7 +71,7 @@ impl<K, V> EntityCollection<HashMap<K, V>>
 where
     V: CollectableEntity,
 {
-    pub fn translate_origin_from(&mut self, point: &geo::Point) {
+    pub fn translate_origin_from(&mut self, point: &Point) {
         for val in self.collection.values_mut() {
             let mut coord = val.coord().clone();
             coord = util::geo::coord_to_xy(coord, point);
@@ -79,7 +82,7 @@ where
 
 impl EntityCollection<BTreeMap<String, Vec<ShapeSeq>>>
 {
-    pub fn translate_origin_from(&mut self, point: &geo::Point) {
+    pub fn translate_origin_from(&mut self, point: &Point) {
         for shape in self.collection.values_mut() {
             for seq in shape.iter_mut() {
                 let mut coord = seq.coord().clone();
@@ -90,8 +93,8 @@ impl EntityCollection<BTreeMap<String, Vec<ShapeSeq>>>
     }
 }
 
-impl EntityCollection<GeometryCollection> {
-    pub fn translate_origin_from(&mut self, point: &geo::Point) {
+impl EntityCollection<GeometryCollection<f32>> {
+    pub fn translate_origin_from(&mut self, point: &Point) {
         self.collection = self.map_coords(|c| util::geo::coord_to_xy(c, &point));
     }
 }
@@ -111,19 +114,19 @@ impl<T> DerefMut for EntityCollection<T> {
 
 pub trait CollectableEntity {
     type Collection;
-    fn coord(&self) -> geo::Coord;
-    fn set_coord(&mut self, coord: geo::Coord);
+    fn coord(&self) -> Coord;
+    fn set_coord(&mut self, coord: Coord);
     fn collection() -> Self::Collection;
     fn load_collection() -> Result<Self::Collection>;
 }
 
 impl CollectableEntity for Stop {
     type Collection = EntityCollection<HashMap<String, Self>>;
-    fn coord(&self) -> geo::Coord {
+    fn coord(&self) -> geo::Coord<f32> {
         self.coord
     }
 
-    fn set_coord(&mut self, coord: geo::Coord) {
+    fn set_coord(&mut self, coord: Coord) {
         self.coord = coord;
     }
 
@@ -143,7 +146,7 @@ impl CollectableEntity for Stop {
             let stop = Stop {
                 id: row.stop_id,
                 kind: row.location_type,
-                coord: geo::coord! { x: row.stop_lon as f64, y: row.stop_lat as f64 },
+                coord: geo::coord! { x: row.stop_lon, y: row.stop_lat },
                 parent: row.parent_station,
                 status: StationStatus::Inactive,
             };
@@ -155,11 +158,11 @@ impl CollectableEntity for Stop {
 
 impl CollectableEntity for ShapeSeq {
     type Collection = EntityCollection<BTreeMap<String, Vec<Self>>>;
-    fn coord(&self) -> geo::Coord {
+    fn coord(&self) -> Coord {
         self.coord
     }
 
-    fn set_coord(&mut self, coord: geo::Coord) {
+    fn set_coord(&mut self, coord: Coord) {
         self.coord = coord;
     }
 
@@ -193,12 +196,12 @@ impl CollectableEntity for ShapeSeq {
 }
 
 impl CollectableEntity for Boro {
-    type Collection = EntityCollection<GeometryCollection>;
-    fn coord(&self) -> geo::Coord {
+    type Collection = EntityCollection<GeometryCollection<f32>>;
+    fn coord(&self) -> Coord {
         self.geometry.bounding_rect().unwrap().center()
     }
 
-    fn set_coord(&mut self, coord: geo::Coord) {
+    fn set_coord(&mut self, coord: Coord) {
         let center = self.coord();
         self.geometry = self.geometry
             .translate(coord.x - center.x, coord.y - center.y);

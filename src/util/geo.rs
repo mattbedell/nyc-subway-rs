@@ -22,8 +22,8 @@ pub fn combine_bounding_rect(acc: Rect, rect: Rect) -> Rect {
     Rect::new(nmin, nmax)
 }
 
-pub fn coord_to_xy(coord: Coord, centroid: &Point) -> Coord {
-    let point: Point = coord.into();
+pub fn coord_to_xy(coord: Coord<f32>, centroid: &Point<f32>) -> Coord<f32> {
+    let point: Point<f32> = coord.into();
     let distance = centroid.haversine_distance(&point);
     let bearing = centroid.haversine_bearing(point).to_radians();
     let x = distance * bearing.cos();

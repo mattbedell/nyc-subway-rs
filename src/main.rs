@@ -53,7 +53,7 @@ async fn main() -> Result<()> {
     let mut shapes = entities::ShapeSeq::load_collection()?;
 
     let o_rect = boros.bounding_rect().unwrap();
-    let origin: Point = o_rect.center().into();
+    let origin: Point<f32> = o_rect.center().into();
 
     boros.translate_origin_from(&origin);
     shapes.translate_origin_from(&origin);
@@ -74,7 +74,7 @@ async fn main() -> Result<()> {
         .iter()
         .flat_map(|geo| {
             let geo = geo.clone();
-            let poly: MultiPolygon = geo.try_into().unwrap();
+            let poly: MultiPolygon<f32> = geo.try_into().unwrap();
             poly.into_iter().flat_map(|p| {
                 p.earcut_triangles()
                     .into_iter()
@@ -102,9 +102,8 @@ async fn main() -> Result<()> {
 
 
     tess.tessellate_path(&path, &StrokeOptions::default().with_line_width(70.), &mut BuffersBuilder::new(&mut geo, |vertex: StrokeVertex| {
-        let pos = vertex.position().to_array();
         Vertex {
-            position: [pos[0], pos[1], 0.0],
+            position: vertex.position().to_3d().to_array(),
             normal: [0.0, 0.0, 0.0],
             color: [1.0, 1.0, 1.0],
             miter: 0.0,
