@@ -1,9 +1,12 @@
+use lyon::geom::point;
+use lyon::path::{Path, Winding};
+use lyon::tessellation::{
+    BuffersBuilder, FillOptions, FillTessellator, FillVertex, StrokeOptions, StrokeTessellator,
+    StrokeVertex, VertexBuffers,
+};
 use std::sync::mpsc::{channel, TryRecvError};
 use std::thread;
 use std::time::{Duration, Instant};
-use lyon::geom::point;
-use lyon::path::Path;
-use lyon::tessellation::{BuffersBuilder, StrokeOptions, StrokeTessellator, StrokeVertex, VertexBuffers};
 use tokio;
 
 use lyon;
@@ -19,8 +22,7 @@ use winit::{
 use anyhow::Result;
 use env_logger;
 use geo::{
-    BoundingRect, Coord, CoordsIter, MultiPolygon,
-    Point, Rect, Translate, TriangulateEarcut,
+    BoundingRect, Coord, CoordsIter, MultiPolygon, Point, Rect, Translate, TriangulateEarcut,
 };
 
 use entities::CollectableEntity;
@@ -51,12 +53,14 @@ async fn main() -> Result<()> {
 
     let mut boros = entities::Boro::load_collection()?;
     let mut shapes = entities::ShapeSeq::load_collection()?;
+    let mut stops = entities::Stop::load_collection()?;
 
     let o_rect = boros.bounding_rect().unwrap();
     let origin: Point<f32> = o_rect.center().into();
 
     boros.translate_origin_from(&origin);
     shapes.translate_origin_from(&origin);
+    stops.translate_origin_from(&origin);
 
     let boros_rect = boros.bounding_rect().unwrap();
     let v_scale = 1.;
@@ -84,44 +88,62 @@ async fn main() -> Result<()> {
         .collect();
 
     let mut geo: VertexBuffers<Vertex, u32> = VertexBuffers::new();
-    let mut builder = Path::builder();
+    let mut stroke = Path::builder();
 
     for shape in shapes.values() {
         let first = shape[0].coord();
-        builder.begin(point(first.x as f32, first.y as f32));
+        stroke.begin(point(first.x, first.y));
         for seq in &shape[1..] {
             let coord = seq.coord();
-            builder.line_to(point(coord.x as f32, coord.y as f32));
+            stroke.line_to(point(coord.x, coord.y));
         }
-        builder.end(false);
+        stroke.end(false);
     }
 
-    let path = builder.build();
+    let stroke_path = stroke.build();
 
-    let mut tess = StrokeTessellator::new();
+    let mut stroke_tessellator = StrokeTessellator::new();
+    let mut fill_tessellator = FillTessellator::new();
 
+    stroke_tessellator
+        .tessellate_path(
+            &stroke_path,
+            &StrokeOptions::default().with_line_width(70.),
+            &mut BuffersBuilder::new(&mut geo, |vertex: StrokeVertex| Vertex {
+                position: vertex.position().to_3d().to_array(),
+                normal: [0.0, 0.0, 0.0],
+                color: [1.0, 1.0, 1.0],
+                miter: 0.0,
+            }),
+        )
+        .unwrap();
+    {
 
-    tess.tessellate_path(&path, &StrokeOptions::default().with_line_width(70.), &mut BuffersBuilder::new(&mut geo, |vertex: StrokeVertex| {
-        Vertex {
+        let builder = &mut BuffersBuilder::new(&mut geo, |vertex: FillVertex| Vertex {
             position: vertex.position().to_3d().to_array(),
             normal: [0.0, 0.0, 0.0],
             color: [1.0, 1.0, 1.0],
             miter: 0.0,
-        }
-    })).unwrap();
+        });
+        for stop in stops.values() {
+            fill_tessellator
+                .tessellate_circle(
+                    point(stop.coord.x, stop.coord.y),
+                    120.,
+                    &FillOptions::default(),
+                    builder,
+                )
+                .unwrap();
+            }
+    }
+
 
     let event_loop = EventLoop::new().unwrap();
     let window = WindowBuilder::new().build(&event_loop).unwrap();
     window.set_min_inner_size(Some(PhysicalSize::new(1600, 1600)));
     window.set_max_inner_size(Some(PhysicalSize::new(1600, 1600)));
 
-    let mut state = render::State::new(
-        &window,
-        camera_uniform,
-        &boro_vertices[..],
-        geo,
-    )
-    .await;
+    let mut state = render::State::new(&window, camera_uniform, &boro_vertices[..], geo).await;
 
     let (tx, rx) = channel();
 
