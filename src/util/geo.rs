@@ -1,4 +1,4 @@
-use geo::{Coord, Rect, Point, HaversineBearing, HaversineDistance};
+use geo::{Coord, HaversineBearing, HaversineDistance, Point, Polygon, Rect, LineString};
 
 pub fn combine_bounding_rect(acc: Rect, rect: Rect) -> Rect {
     let Coord { x: min_x, y: min_y } = acc.min();
@@ -29,4 +29,19 @@ pub fn coord_to_xy(coord: Coord, centroid: Point) -> Coord {
     let x = distance * bearing.cos();
     let y = distance * bearing.sin();
     Coord { x, y }
+}
+
+pub fn circle(coord: Coord, radius: f64) -> Polygon {
+    let mut line_coords: Vec<Coord> = Vec::new();
+
+    for deg in (1..=360).step_by(5) {
+        let rad = (deg as f64).to_radians();
+        let x = coord.x + (radius * rad.cos());
+        let y = coord.y + (radius * rad.sin());
+        line_coords.push(geo::coord!{ x: x, y: y });
+    };
+    let first = line_coords.first().unwrap();
+    line_coords.push(first.clone());
+
+    Polygon::new(LineString::new(line_coords), vec![])
 }

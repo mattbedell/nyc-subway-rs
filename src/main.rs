@@ -2,17 +2,13 @@ use std::collections::HashMap;
 use std::fmt::Formatter;
 
 use winit::{
-    event::*,
-    event_loop::EventLoop,
-    keyboard::{KeyCode, PhysicalKey},
-    window::WindowBuilder,
+    dpi::PhysicalSize, event::*, event_loop::EventLoop, keyboard::{KeyCode, PhysicalKey}, window::WindowBuilder
 };
 
 use anyhow::Result;
 use env_logger;
 use geo::{
-    self, BoundingRect, Coord, CoordsIter, GeometryCollection, MapCoords, MultiPolygon, Point,
-    Rect, Translate, TriangulateEarcut,
+    self, BoundingRect, Contains, Coord, CoordsIter, GeometryCollection, MapCoords, MultiPolygon, Point, Polygon, Rect, Relate, Translate, TriangulateEarcut
 };
 use geojson;
 use serde::{de::Visitor, Deserialize, Deserializer};
@@ -35,21 +31,20 @@ enum LocationKind {
 struct Stop {
     pub id: String,
     pub kind: LocationKind,
-    pub pos: Point,
-    pub lat: f32,
-    pub lon: f32,
+    pub geometry: Polygon,
     pub parent: Option<String>,
 }
 
-impl From<StopRow> for Stop {
-    fn from(v: StopRow) -> Self {
-        Stop {
-            id: v.stop_id,
-            kind: v.location_type,
-            pos: Point::new(0., 0.),
-            lat: v.stop_lat,
-            lon: v.stop_lon,
-            parent: v.parent_station,
+impl Stop {
+    pub fn new(row: StopRow, rel_center: Point) -> Self {
+        let pos = geo::coord! { x: row.stop_lon as f64, y: row.stop_lat as f64 };
+        let xy = util::geo::coord_to_xy(pos, rel_center);
+        Self {
+            id: row.stop_id,
+            kind: row.location_type,
+            geometry: util::geo::circle(xy, 100.),
+            // geometry: Rect::new(xy, geo::coord! { x: xy.x + 100., y: xy.y + 100.}).into(),
+            parent: row.parent_station,
         }
     }
 }
@@ -90,33 +85,29 @@ async fn main() -> Result<()> {
 
     let mut rdr = csv::Reader::from_path(stops_path)?;
 
-    let mut stops: HashMap<String, Stop> = HashMap::new();
-
-    for rec in rdr.deserialize() {
-        let stop_row: StopRow = rec?;
-        let stop = Stop::from(stop_row);
-        stops.insert(stop.id.clone(), stop);
-    }
-
     let feature_reader = {
         use std::fs::File;
         let file = File::open(xdg.find_data_file(BOROUGH_BOUNDARIES_STATIC.1).unwrap()).unwrap();
         geojson::FeatureReader::from_reader(file)
     };
 
-    let mut boros: Vec<Boro> = Vec::new();
     let mut boro_geo: Vec<geo::Geometry> = Vec::new();
     for rec in feature_reader.deserialize().unwrap() {
         let boro: Boro = rec?;
-        boro_geo.push(boro.geometry.to_owned());
-        boros.push(boro);
+        boro_geo.push(boro.geometry);
     }
 
-    let event_loop = EventLoop::new().unwrap();
-    let window = WindowBuilder::new().build(&event_loop).unwrap();
 
     let mut geoc = GeometryCollection(boro_geo);
     let o_center: Point = geoc.bounding_rect().unwrap().center().into();
+
+    let mut stops: HashMap<String, Stop> = HashMap::new();
+    for rec in rdr.deserialize() {
+        let stop_row: StopRow = rec?;
+        let stop = Stop::new(stop_row, o_center);
+        stops.insert(stop.id.clone(), stop);
+    }
+
     geoc = geoc.map_coords(|coord| util::geo::coord_to_xy(coord, o_center));
 
     let vp_br = geoc.bounding_rect().unwrap();
@@ -130,7 +121,7 @@ async fn main() -> Result<()> {
     viewport.translate_mut(viewport.center().x * -1., viewport.center().y * -1.);
 
     let camera_uniform = CameraUniform::new(viewport);
-    let mp: Vec<Vertex> = geoc
+    let mut boro_vertices: Vec<Vertex> = geoc
         .into_iter()
         .flat_map(|geo| {
             let poly: MultiPolygon = geo.try_into().unwrap();
@@ -142,7 +133,30 @@ async fn main() -> Result<()> {
         })
         .collect();
 
-    let mut state = render::State::new(&window, camera_uniform, &mp[..]).await;
+    let stop_vertices = stops.values().filter(|stop| {
+        if let LocationKind::Station = stop.kind {
+            true
+        } else {
+            false
+        }
+    }).flat_map(|stop| {
+        stop.geometry.earcut_triangles_iter().fold(vec![], |mut acc, tri| {
+            let color = [0.0, 0.0, 0.0];
+            acc.push(Vertex::new(tri.0, color));
+            acc.push(Vertex::new(tri.1, color));
+            acc.push(Vertex::new(tri.2, color));
+            acc
+        })
+    });
+
+    boro_vertices.extend(stop_vertices);
+
+    let event_loop = EventLoop::new().unwrap();
+    let window = WindowBuilder::new().build(&event_loop).unwrap();
+    window.set_min_inner_size(Some(PhysicalSize::new (1600, 1600)));
+    window.set_max_inner_size(Some(PhysicalSize::new (1600, 1600)));
+
+    let mut state = render::State::new(&window, camera_uniform, &boro_vertices[..]).await;
 
     let _ = event_loop.run(move |event, control_flow| match event {
         Event::WindowEvent {
