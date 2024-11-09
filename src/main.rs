@@ -1,14 +1,25 @@
-use std::collections::HashMap;
+use cgmath::Vector3;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt::Formatter;
+use std::ops::Range;
+use std::sync::mpsc::{channel, TryRecvError};
+use std::thread;
+use std::time::{Duration, Instant};
+use tokio;
 
 use winit::{
-    dpi::PhysicalSize, event::*, event_loop::EventLoop, keyboard::{KeyCode, PhysicalKey}, window::WindowBuilder
+    dpi::PhysicalSize,
+    event::*,
+    event_loop::EventLoop,
+    keyboard::{KeyCode, PhysicalKey},
+    window::WindowBuilder,
 };
 
 use anyhow::Result;
 use env_logger;
 use geo::{
-    self, BoundingRect, Contains, Coord, CoordsIter, GeometryCollection, MapCoords, MultiPolygon, Point, Polygon, Rect, Relate, Translate, TriangulateEarcut
+    self, BoundingRect, Contains, Coord, CoordsIter, GeometryCollection, MapCoords, MultiPolygon,
+    Point, Polygon, Rect, Relate, Scale, Translate, TriangulateEarcut,
 };
 use geojson;
 use serde::{de::Visitor, Deserialize, Deserializer};
@@ -36,14 +47,13 @@ struct Stop {
 }
 
 impl Stop {
-    pub fn new(row: StopRow, rel_center: Point) -> Self {
+    pub fn new(row: StopRow, rel_center: &Point) -> Self {
         let pos = geo::coord! { x: row.stop_lon as f64, y: row.stop_lat as f64 };
         let xy = util::geo::coord_to_xy(pos, rel_center);
         Self {
             id: row.stop_id,
             kind: row.location_type,
-            geometry: util::geo::circle(xy, 100.),
-            // geometry: Rect::new(xy, geo::coord! { x: xy.x + 100., y: xy.y + 100.}).into(),
+            geometry: util::geo::circle(xy, 90.),
             parent: row.parent_station,
         }
     }
@@ -64,6 +74,19 @@ struct Boro {
     geometry: geo::geometry::Geometry,
 }
 
+#[derive(Deserialize)]
+struct ShapeRow {
+    shape_id: String,
+    shape_pt_sequence: usize,
+    shape_pt_lat: f64,
+    shape_pt_lon: f64,
+}
+
+struct StaticRanges {
+    pub boros: Range<u32>,
+    pub stops: Range<u32>,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     env_logger::init();
@@ -82,8 +105,10 @@ async fn main() -> Result<()> {
     }
 
     let stops_path = xdg.find_data_file("stops.txt").unwrap();
+    let shapes_path = xdg.find_data_file("shapes.txt").unwrap();
 
-    let mut rdr = csv::Reader::from_path(stops_path)?;
+    let mut stops_rdr = csv::Reader::from_path(stops_path)?;
+    let mut shapes_rdr = csv::Reader::from_path(shapes_path)?;
 
     let feature_reader = {
         use std::fs::File;
@@ -97,28 +122,54 @@ async fn main() -> Result<()> {
         boro_geo.push(boro.geometry);
     }
 
-
     let mut geoc = GeometryCollection(boro_geo);
     let o_center: Point = geoc.bounding_rect().unwrap().center().into();
 
     let mut stops: HashMap<String, Stop> = HashMap::new();
-    for rec in rdr.deserialize() {
+    for rec in stops_rdr.deserialize() {
         let stop_row: StopRow = rec?;
-        let stop = Stop::new(stop_row, o_center);
+        let stop = Stop::new(stop_row, &o_center);
         stops.insert(stop.id.clone(), stop);
     }
 
-    geoc = geoc.map_coords(|coord| util::geo::coord_to_xy(coord, o_center));
+    let mut shapes: BTreeMap<String, BTreeMap<usize, Coord>> = BTreeMap::new();
+    for rec in shapes_rdr.deserialize() {
+        let shape_row: ShapeRow = rec?;
+        let seq = shapes.entry(shape_row.shape_id).or_insert(BTreeMap::new());
+        let coord = util::geo::coord_to_xy(
+            geo::coord! { x: shape_row.shape_pt_lon, y: shape_row.shape_pt_lat },
+            &o_center,
+        );
+        seq.insert(shape_row.shape_pt_sequence, coord);
+    }
+    let shape_vertices = shapes
+        .values()
+        .fold((Vec::new(), Vec::new()), |mut acc, shape| {
+            let vertices: Vec<Vertex> = shape
+                .values()
+                .map(|c| Vertex {
+                    color: [1.0, 1.0, 1.0],
+                    ..Vertex::from(c)
+                })
+                .collect();
+            let alen = acc.1.len() as u32;
+            acc.1.extend(vertices);
+            acc.0.push(alen..acc.1.len() as u32);
+            acc
+        });
+
+    geoc = geoc.map_coords(|coord| util::geo::coord_to_xy(coord, &o_center));
 
     let vp_br = geoc.bounding_rect().unwrap();
+    let v_scale = 0.6;
     let mut viewport = Rect::new(
         Coord::zero(),
         Coord {
-            x: vp_br.height().max(vp_br.width()),
-            y: vp_br.height().max(vp_br.width()),
+            x: vp_br.height().max(vp_br.width()) * v_scale,
+            y: vp_br.height().max(vp_br.width()) * v_scale,
         },
     );
-    viewport.translate_mut(viewport.center().x * -1., viewport.center().y * -1.);
+    viewport.translate_mut(viewport.center().x * -1. * 0.8, viewport.center().y * -1.);
 
     let camera_uniform = CameraUniform::new(viewport);
     let mut boro_vertices: Vec<Vertex> = geoc
@@ -133,30 +184,76 @@ async fn main() -> Result<()> {
         })
         .collect();
 
-    let stop_vertices = stops.values().filter(|stop| {
-        if let LocationKind::Station = stop.kind {
-            true
-        } else {
-            false
-        }
-    }).flat_map(|stop| {
-        stop.geometry.earcut_triangles_iter().fold(vec![], |mut acc, tri| {
-            let color = [0.0, 0.0, 0.0];
-            acc.push(Vertex::new(tri.0, color));
-            acc.push(Vertex::new(tri.1, color));
-            acc.push(Vertex::new(tri.2, color));
-            acc
+    let stop_vertices = stops
+        .values()
+        .filter(|stop| {
+            if let LocationKind::Station = stop.kind {
+                true
+            } else {
+                false
+            }
         })
-    });
+        .flat_map(|stop| {
+            stop.geometry
+                .scale(v_scale)
+                .earcut_triangles_iter()
+                .fold(vec![], |mut acc, tri| {
+                    let color = [1.0, 1.0, 1.0];
+                    acc.push(Vertex::new(tri.0, color));
+                    acc.push(Vertex::new(tri.1, color));
+                    acc.push(Vertex::new(tri.2, color));
+                    acc
+                })
+        });
 
+    let b_len = boro_vertices.len() as u32;
     boro_vertices.extend(stop_vertices);
+
+    let static_ranges = StaticRanges {
+        boros: 0..b_len,
+        stops: b_len..boro_vertices.len() as u32,
+    };
 
     let event_loop = EventLoop::new().unwrap();
     let window = WindowBuilder::new().build(&event_loop).unwrap();
-    window.set_min_inner_size(Some(PhysicalSize::new (1600, 1600)));
-    window.set_max_inner_size(Some(PhysicalSize::new (1600, 1600)));
+    window.set_min_inner_size(Some(PhysicalSize::new(1600, 1600)));
+    window.set_max_inner_size(Some(PhysicalSize::new(1600, 1600)));
 
-    let mut state = render::State::new(&window, camera_uniform, &boro_vertices[..]).await;
+    let mut state = render::State::new(
+        &window,
+        camera_uniform,
+        static_ranges,
+        &boro_vertices[..],
+        &shape_vertices.1[..],
+        shape_vertices.0,
+    )
+    .await;
+
+    // tokio::task::spawn_blocking(move || async move {
+    //     println!("foo");
+    //     let sleep_ms = 5000;
+    //     let sleep = tokio::time::sleep(Duration::from_secs(sleep_ms));
+    //     tokio::pin!(sleep);
+    //     loop {
+    //         tokio::select! {
+    //             () = &mut sleep => {
+    //                 println!("{:?}", tokio::time::Instant::now());
+    //                 sleep.as_mut().reset(tokio::time::Instant::now() + tokio::time::Duration::from_secs(sleep_ms));
+    //             },
+    //         }
+    //     }
+    // });
+
+    // rx.recv()
+
+    let (tx, rx) = channel();
+
+    thread::spawn(move || loop {
+        let now = Instant::now();
+        let msg = format!("hello thread: {:?}", now);
+        tx.send(msg).unwrap();
+        thread::sleep(Duration::from_secs(5))
+    });
 
     let _ = event_loop.run(move |event, control_flow| match event {
         Event::WindowEvent {
@@ -180,6 +277,13 @@ async fn main() -> Result<()> {
                     }
                     WindowEvent::RedrawRequested => {
                         state.window().request_redraw();
+                        match rx.try_recv() {
+                            Ok(data) => println!("{}", data),
+                            Err(TryRecvError::Disconnected) => {
+                                panic!("Unable to fetch data");
+                            }
+                            _ => {}
+                        }
 
                         // if !surface_configured {
                         //     return;

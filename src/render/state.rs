@@ -1,4 +1,6 @@
+use crate::StaticRanges;
 use geo::{Coord, Rect};
+use std::ops::Range;
 use wgpu::util::DeviceExt;
 use wgpu::Buffer;
 use winit::event::WindowEvent;
@@ -15,17 +17,27 @@ pub struct State<'a> {
     clear_color: wgpu::Color,
     render_pipeline: wgpu::RenderPipeline,
     vertex_buffer: wgpu::Buffer,
+    static_ranges: StaticRanges,
+    shape_buffer: wgpu::Buffer,
+    shape_pipeline: wgpu::RenderPipeline,
+    num_shape_vertices: Vec<Range<u32>>,
     camera_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
     // index_buffer: wgpu::Buffer,
     // num_indices: u32,
-    num_vertices: u32,
     // poly_slices: Vec<u32>,
 }
 
 impl<'a> State<'a> {
     // https://sotrh.github.io/learn-wgpu/beginner/tutorial2-surface/#state-new
-    pub async fn new(window: &'a Window, camera: CameraUniform, boros: &[Vertex]) -> State<'a> {
+    pub async fn new(
+        window: &'a Window,
+        camera: CameraUniform,
+        static_ranges: StaticRanges,
+        static_verts: &[Vertex],
+        shape_vertices: &[Vertex],
+        shape_ranges: Vec<Range<u32>>,
+    ) -> State<'a> {
         let size = window.inner_size();
 
         // The instance is a handle to our GPU
@@ -166,6 +178,48 @@ impl<'a> State<'a> {
             multiview: None, // 5.
             cache: None,     // 6.
         });
+        let shape_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Shape Pipeline"),
+            layout: Some(&render_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: "vs_main",     // 1.
+                buffers: &[Vertex::desc()], // 2.
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                // 3.
+                module: &shader,
+                entry_point: "fs_main",
+                targets: &[Some(wgpu::ColorTargetState {
+                    // 4.
+                    format: config.format,
+                    blend: Some(wgpu::BlendState::REPLACE),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::LineStrip, // 1.
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw, // 2.
+                cull_mode: Some(wgpu::Face::Back),
+                // Setting this to anything other than Fill requires Features::NON_FILL_POLYGON_MODE
+                polygon_mode: wgpu::PolygonMode::Fill,
+                // Requires Features::DEPTH_CLIP_CONTROL
+                unclipped_depth: false,
+                // Requires Features::CONSERVATIVE_RASTERIZATION
+                conservative: false,
+            },
+            depth_stencil: None, // 1.
+            multisample: wgpu::MultisampleState {
+                count: 1,                         // 2.
+                mask: !0,                         // 3.
+                alpha_to_coverage_enabled: false, // 4.
+            },
+            multiview: None, // 5.
+            cache: None,     // 6.
+        });
 
         // let bb: Vec<Vertex> = boros[..]
         //     .iter()
@@ -183,7 +237,13 @@ impl<'a> State<'a> {
 
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Vertex Buffer"),
-            contents: bytemuck::cast_slice(&boros[..]),
+            contents: bytemuck::cast_slice(&static_verts[..]),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+
+        let shape_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Vertex Buffer"),
+            contents: bytemuck::cast_slice(&shape_vertices[..]),
             usage: wgpu::BufferUsages::VERTEX,
         });
 
@@ -208,11 +268,14 @@ impl<'a> State<'a> {
             },
             render_pipeline,
             vertex_buffer,
+            static_ranges,
+            shape_buffer,
+            shape_pipeline,
+            num_shape_vertices: shape_ranges,
             camera_buffer,
             camera_bind_group,
             // index_buffer,
             // num_indices: INDICES.len() as u32,
-            num_vertices: boros.len() as u32,
             // poly_slices,
         }
     }
@@ -279,10 +342,22 @@ impl<'a> State<'a> {
                 timestamp_writes: None,
             });
 
-            render_pass.set_pipeline(&self.render_pipeline);
             render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
+            render_pass.set_pipeline(&self.render_pipeline);
             render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-            render_pass.draw(0..self.num_vertices, 0..1);
+            render_pass.draw(self.static_ranges.boros.clone(), 0..1);
+
+            render_pass.set_pipeline(&self.shape_pipeline);
+            render_pass.set_vertex_buffer(0, self.shape_buffer.slice(..));
+
+            for range in &self.num_shape_vertices {
+                render_pass.draw(range.clone(), 0..1);
+            }
+
+            render_pass.set_pipeline(&self.render_pipeline);
+            render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+            render_pass.draw(self.static_ranges.stops.clone(), 0..1);
+
             // let mut last_idx = 0;
             // println!("RANGE {:?} TOTAL: {:?}", self.poly_slices, self.num_vertices);
             // for idx in &self.poly_slices {
@@ -331,14 +406,16 @@ impl CameraUniform {
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct Vertex {
-    position: [f32; 3],
-    color: [f32; 3],
+    pub position: [f32; 3],
+    pub color: [f32; 3],
+    pub normal: [f32; 3],
+    pub miter: f32,
 }
 
 // lib.rs
 impl Vertex {
-    const ATTRIBS: [wgpu::VertexAttribute; 2] =
-        wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3];
+    const ATTRIBS: [wgpu::VertexAttribute; 4] =
+        wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x3, 3 => Float32];
 
     pub fn new(coord: Coord, color: [f32; 3]) -> Self {
         Self {
@@ -356,36 +433,59 @@ impl Vertex {
     }
 }
 
+// impl FromIterator<&Coord> for Vec<Vertex> {
+//     fn from_iter<T: IntoIterator<Item = &Coord>>(iter: T) -> Self {
+//         let mut v: Vec<Vertex> = Vec::new();
+//         for c in iter {
+//             v.push(Vertex::from(c));
+//         }
+//         v
+//     }
+// }
+
 impl From<Coord> for Vertex {
     fn from(value: Coord) -> Self {
         Vertex {
             position: [value.x as f32, value.y as f32, 0.0],
-            color: [1.0, 1.0, 1.0],
+            color: [0.3, 0.3, 0.3],
+            normal: [0.0, 0.0, 0.0],
+            miter: 0.,
         }
     }
 }
 
-const VERTICES: &[Vertex] = &[
-    Vertex {
-        position: [-0.0868241, 0.49240386, 0.0],
-        color: [1.0, 1.0, 1.0],
-    }, // A
-    Vertex {
-        position: [-0.49513406, 0.06958647, 0.0],
-        color: [1.0, 1.0, 1.0],
-    }, // B
-    Vertex {
-        position: [-0.21918549, -0.44939706, 0.0],
-        color: [1.0, 1.0, 1.0],
-    }, // C
-    Vertex {
-        position: [0.35966998, -0.3473291, 0.0],
-        color: [1.0, 1.0, 1.0],
-    }, // D
-    Vertex {
-        position: [0.44147372, 0.2347359, 0.0],
-        color: [1.0, 1.0, 1.0],
-    }, // E
-];
+impl From<&Coord> for Vertex {
+    fn from(value: &Coord) -> Self {
+        Vertex {
+            position: [value.x as f32, value.y as f32, 0.0],
+            color: [1.0, 1.0, 1.0],
+            normal: [0.0, 0.0, 0.0],
+            miter: 0.,
+        }
+    }
+}
 
-const INDICES: &[u16] = &[0, 1, 2, 3];
+// const VERTICES: &[Vertex] = &[
+//     Vertex {
+//         position: [-0.0868241, 0.49240386, 0.0],
+//         color: [1.0, 1.0, 1.0],
+//     }, // A
+//     Vertex {
+//         position: [-0.49513406, 0.06958647, 0.0],
+//         color: [1.0, 1.0, 1.0],
+//     }, // B
+//     Vertex {
+//         position: [-0.21918549, -0.44939706, 0.0],
+//         color: [1.0, 1.0, 1.0],
+//     }, // C
+//     Vertex {
+//         position: [0.35966998, -0.3473291, 0.0],
+//         color: [1.0, 1.0, 1.0],
+//     }, // D
+//     Vertex {
+//         position: [0.44147372, 0.2347359, 0.0],
+//         color: [1.0, 1.0, 1.0],
+//     }, // E
+// ];
+
+// const INDICES: &[u16] = &[0, 1, 2, 3];
