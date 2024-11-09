@@ -4,6 +4,7 @@ use lyon::tessellation::{
     BuffersBuilder, FillOptions, FillTessellator, FillVertex, StrokeOptions, StrokeTessellator,
     StrokeVertex, VertexBuffers,
 };
+use std::iter::Extend;
 use std::sync::mpsc::{channel, TryRecvError};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -22,12 +23,14 @@ use winit::{
 use anyhow::Result;
 use env_logger;
 use geo::{
-    BoundingRect, Coord, CoordsIter, MultiPolygon, Point, Rect, Translate, TriangulateEarcut,
+    BooleanOps, BoundingRect, Coord, CoordsIter, Intersects, MultiPolygon, Point, Rect, Translate, TriangulateEarcut
 };
 
 use entities::CollectableEntity;
 use render::{CameraUniform, Vertex};
-use util::static_data::{self, BOROUGH_BOUNDARIES_STATIC, COASTLINE_STATIC, GTFS_STATIC};
+use util::static_data::{
+    self, BOROUGH_BOUNDARIES_STATIC, COASTLINE_STATIC, GTFS_STATIC, PARKS_STATIC,
+};
 
 mod entities;
 mod proto;
@@ -51,14 +54,20 @@ async fn main() -> Result<()> {
         static_data::fetch(BOROUGH_BOUNDARIES_STATIC, Some(xdg.get_data_home())).await?;
     }
 
+    if static_data::shoud_fetch(PARKS_STATIC) {
+        static_data::fetch(PARKS_STATIC, Some(xdg.get_data_home())).await?;
+    }
+
     let mut boros = entities::Boro::load_collection()?;
     let mut shapes = entities::ShapeSeq::load_collection()?;
     let mut stops = entities::Stop::load_collection()?;
+    let mut parks = entities::Park::load_collection()?;
 
     let o_rect = boros.bounding_rect().unwrap();
     let origin: Point<f32> = o_rect.center().into();
 
     boros.translate_origin_from(&origin);
+    parks.translate_origin_from(&origin);
     shapes.translate_origin_from(&origin);
     stops.translate_origin_from(&origin);
 
@@ -74,7 +83,7 @@ async fn main() -> Result<()> {
     viewport.translate_mut(viewport.center().x * -1. * 0.8, viewport.center().y * -1.);
 
     let camera_uniform = CameraUniform::new(viewport);
-    let boro_vertices: Vec<Vertex> = boros
+    let boro_vertices: Vec<_> = boros
         .iter()
         .flat_map(|geo| {
             let geo = geo.clone();
@@ -86,6 +95,22 @@ async fn main() -> Result<()> {
             })
         })
         .collect();
+
+    // let park_vertices = parks.iter().flat_map(|geo| {
+    //     let geo = geo.clone();
+    //     let poly: MultiPolygon<f32> = geo.try_into().unwrap();
+    //     poly.into_iter().flat_map(|p| {
+    //         p.earcut_triangles().into_iter().flat_map(|tri| {
+    //             tri.coords_iter().map(|coord| Vertex {
+    //                 position: [coord.x, coord.y, 0.0],
+    //                 color: [0.20, 0.3, 0.20],
+    //                 ..Vertex::default()
+    //             })
+    //         })
+    //     })
+    // });
+
+    // boro_vertices.extend(park_vertices);
 
     let mut geo: VertexBuffers<Vertex, u32> = VertexBuffers::new();
     let mut stroke = Path::builder();
@@ -118,7 +143,6 @@ async fn main() -> Result<()> {
         )
         .unwrap();
     {
-
         let builder = &mut BuffersBuilder::new(&mut geo, |vertex: FillVertex| Vertex {
             position: vertex.position().to_3d().to_array(),
             normal: [0.0, 0.0, 0.0],
@@ -134,9 +158,8 @@ async fn main() -> Result<()> {
                     builder,
                 )
                 .unwrap();
-            }
+        }
     }
-
 
     let event_loop = EventLoop::new().unwrap();
     let window = WindowBuilder::new().build(&event_loop).unwrap();

@@ -30,7 +30,7 @@ impl<'a> State<'a> {
         window: &'a Window,
         camera: CameraUniform,
         static_verts: &[Vertex],
-        geo: lyon::tessellation::VertexBuffers<Vertex, u32>
+        geo: lyon::tessellation::VertexBuffers<Vertex, u32>,
     ) -> State<'a> {
         let size = window.inner_size();
 
@@ -271,9 +271,9 @@ impl<'a> State<'a> {
             render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
             render_pass.draw(0..self.num_vertices as u32, 0..1);
 
-
             render_pass.set_vertex_buffer(0, self.geo_vertex_buffer.slice(..));
-            render_pass.set_index_buffer(self.geo_index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+            render_pass
+                .set_index_buffer(self.geo_index_buffer.slice(..), wgpu::IndexFormat::Uint32);
             render_pass.draw_indexed(self.geo_range.clone(), 0, 0..1);
         }
         self.queue.submit(std::iter::once(encoder.finish()));
@@ -310,7 +310,7 @@ impl CameraUniform {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+#[derive(Copy, Clone, Debug, Default, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct Vertex {
     pub position: [f32; 3],
     pub color: [f32; 3],
@@ -318,7 +318,6 @@ pub struct Vertex {
     pub miter: f32,
 }
 
-// lib.rs
 impl Vertex {
     const ATTRIBS: [wgpu::VertexAttribute; 4] =
         wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x3, 3 => Float32];

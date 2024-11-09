@@ -5,7 +5,7 @@ use serde::{de::Visitor, Deserialize, Deserializer};
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Formatter;
 use std::ops::{Deref, DerefMut};
-use util::static_data::BOROUGH_BOUNDARIES_STATIC;
+use util::static_data::{BOROUGH_BOUNDARIES_STATIC, PARKS_STATIC};
 
 type Coord = geo::Coord<f32>;
 type Point = geo::Point<f32>;
@@ -40,6 +40,12 @@ pub struct Boro {
     geometry: geo::geometry::Geometry<f32>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct Park {
+    #[serde(deserialize_with = "geojson::de::deserialize_geometry")]
+    geometry: geo::geometry::Geometry<f32>,
+}
+
 pub struct Stop {
     pub id: String,
     pub kind: LocationKind,
@@ -57,10 +63,6 @@ enum StationStatus {
 pub struct ShapeSeq {
     seq: usize,
     coord: Coord,
-}
-
-pub struct ShapeCollection {
-    collection: BTreeMap<String, Vec<ShapeSeq>>,
 }
 
 pub struct EntityCollection<T> {
@@ -224,6 +226,43 @@ impl CollectableEntity for Boro {
         for rec in feature_reader.deserialize().unwrap() {
             let boro: Boro = rec?;
             geos.push(boro.geometry);
+        }
+
+        Ok(EntityCollection {
+            collection: GeometryCollection(geos),
+        })
+    }
+}
+
+impl CollectableEntity for Park {
+    type Collection = EntityCollection<GeometryCollection<f32>>;
+    fn coord(&self) -> Coord {
+        self.geometry.bounding_rect().unwrap().center()
+    }
+
+    fn set_coord(&mut self, coord: Coord) {
+        let center = self.coord();
+        self.geometry = self.geometry
+            .translate(coord.x - center.x, coord.y - center.y);
+    }
+    fn collection() -> Self::Collection {
+        EntityCollection {
+            collection: GeometryCollection::default(),
+        }
+    }
+    fn load_collection() -> Result<Self::Collection> {
+        let xdg = util::get_xdg()?;
+        let feature_reader = {
+            use std::fs::File;
+            let file =
+                File::open(xdg.find_data_file(PARKS_STATIC.1).unwrap()).unwrap();
+            geojson::FeatureReader::from_reader(file)
+        };
+
+        let mut geos = Vec::new();
+        for rec in feature_reader.deserialize().unwrap() {
+            let park: Park = rec?;
+            geos.push(park.geometry);
         }
 
         Ok(EntityCollection {

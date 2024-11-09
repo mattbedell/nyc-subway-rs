@@ -31,6 +31,12 @@ pub mod static_data {
         "https://data.cityofnewyork.us/resource/7t3b-ywvw.geojson",
         "nyc_boroughs.geojson",
     );
+
+    pub const PARKS_STATIC: StaticDataEndpoint = (
+        "https://data.cityofnewyork.us/resource/enfh-gkve.geojson?typecategory=Flagship Park",
+        "nyc_parks.geojson",
+    );
+
     pub async fn fetch(
         endpoint: StaticDataEndpoint,
         base_path: Option<PathBuf>,
