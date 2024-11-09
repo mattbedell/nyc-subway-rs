@@ -1,4 +1,3 @@
-use crate::StaticRanges;
 use geo::{Coord, Rect};
 use std::ops::Range;
 use wgpu::util::DeviceExt;
@@ -17,10 +16,7 @@ pub struct State<'a> {
     clear_color: wgpu::Color,
     render_pipeline: wgpu::RenderPipeline,
     vertex_buffer: wgpu::Buffer,
-    static_ranges: StaticRanges,
-    shape_buffer: wgpu::Buffer,
-    shape_pipeline: wgpu::RenderPipeline,
-    num_shape_vertices: Vec<Range<u32>>,
+    num_vertices: usize,
     camera_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
     // index_buffer: wgpu::Buffer,
@@ -33,10 +29,7 @@ impl<'a> State<'a> {
     pub async fn new(
         window: &'a Window,
         camera: CameraUniform,
-        static_ranges: StaticRanges,
         static_verts: &[Vertex],
-        shape_vertices: &[Vertex],
-        shape_ranges: Vec<Range<u32>>,
     ) -> State<'a> {
         let size = window.inner_size();
 
@@ -241,12 +234,6 @@ impl<'a> State<'a> {
             usage: wgpu::BufferUsages::VERTEX,
         });
 
-        let shape_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Vertex Buffer"),
-            contents: bytemuck::cast_slice(&shape_vertices[..]),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
-
         // let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         //     label: Some("Index Buffer"),
         //     contents: bytemuck::cast_slice(&bb[..]),
@@ -268,10 +255,7 @@ impl<'a> State<'a> {
             },
             render_pipeline,
             vertex_buffer,
-            static_ranges,
-            shape_buffer,
-            shape_pipeline,
-            num_shape_vertices: shape_ranges,
+            num_vertices: static_verts.len(),
             camera_buffer,
             camera_bind_group,
             // index_buffer,
@@ -345,18 +329,8 @@ impl<'a> State<'a> {
             render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
             render_pass.set_pipeline(&self.render_pipeline);
             render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-            render_pass.draw(self.static_ranges.boros.clone(), 0..1);
+            render_pass.draw(0..self.num_vertices as u32, 0..1);
 
-            render_pass.set_pipeline(&self.shape_pipeline);
-            render_pass.set_vertex_buffer(0, self.shape_buffer.slice(..));
-
-            for range in &self.num_shape_vertices {
-                render_pass.draw(range.clone(), 0..1);
-            }
-
-            render_pass.set_pipeline(&self.render_pipeline);
-            render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-            render_pass.draw(self.static_ranges.stops.clone(), 0..1);
 
             // let mut last_idx = 0;
             // println!("RANGE {:?} TOTAL: {:?}", self.poly_slices, self.num_vertices);
