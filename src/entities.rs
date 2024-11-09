@@ -50,20 +50,6 @@ enum StationStatus {
     Inactive,
 }
 
-// impl Stop {
-//     pub fn new(row: StopRow, center: geo::Point) -> Self {
-//         let pos = geo::coord! { x: row.stop_lon as f64, y: row.stop_lat as f64 };
-//         let xy = util::geo::coord_to_xy(pos, &center);
-//         Self {
-//             id: row.stop_id,
-//             kind: row.location_type,
-//             coord: xy,
-//             parent: row.parent_station,
-//             status: StationStatus::Inactive,
-//         }
-//     }
-// }
-
 #[derive(Debug)]
 pub struct ShapeSeq {
     seq: usize,
@@ -87,6 +73,19 @@ where
             let mut coord = val.coord().clone();
             coord = util::geo::coord_to_xy(coord, point);
             val.set_coord(coord);
+        }
+    }
+}
+
+impl EntityCollection<BTreeMap<String, Vec<ShapeSeq>>>
+{
+    pub fn translate_origin_from(&mut self, point: &geo::Point) {
+        for shape in self.collection.values_mut() {
+            for seq in shape.iter_mut() {
+                let mut coord = seq.coord().clone();
+                coord = util::geo::coord_to_xy(coord, point);
+                seq.set_coord(coord);
+            }
         }
     }
 }
@@ -154,6 +153,45 @@ impl CollectableEntity for Stop {
     }
 }
 
+impl CollectableEntity for ShapeSeq {
+    type Collection = EntityCollection<BTreeMap<String, Vec<Self>>>;
+    fn coord(&self) -> geo::Coord {
+        self.coord
+    }
+
+    fn set_coord(&mut self, coord: geo::Coord) {
+        self.coord = coord;
+    }
+
+    fn collection() -> Self::Collection {
+        EntityCollection {
+            collection: BTreeMap::new(),
+        }
+    }
+
+    fn load_collection() -> Result<Self::Collection> {
+        let xdg = util::get_xdg()?;
+        let stops_path = xdg.find_data_file("shapes.txt").unwrap();
+        let mut rdr = csv::Reader::from_path(stops_path)?;
+        let mut collection = Self::collection();
+        for rec in rdr.deserialize() {
+            let row: ShapeRow = rec?;
+            let shape = ShapeSeq {
+                coord: geo::coord! { x: row.shape_pt_lon, y: row.shape_pt_lat },
+                seq: row.shape_pt_sequence,
+            };
+            let seq = collection.entry(row.shape_id.clone())
+                .or_insert_with(|| Vec::new());
+            seq.push(shape);
+        }
+        for seq in collection.values_mut() {
+            seq.sort_by(|a, b| a.seq.cmp(&b.seq));
+        }
+
+        Ok(collection)
+    }
+}
+
 impl CollectableEntity for Boro {
     type Collection = EntityCollection<GeometryCollection>;
     fn coord(&self) -> geo::Coord {
@@ -162,7 +200,7 @@ impl CollectableEntity for Boro {
 
     fn set_coord(&mut self, coord: geo::Coord) {
         let center = self.coord();
-        self.geometry
+        self.geometry = self.geometry
             .translate(coord.x - center.x, coord.y - center.y);
     }
     fn collection() -> Self::Collection {
@@ -190,59 +228,3 @@ impl CollectableEntity for Boro {
         })
     }
 }
-
-// impl EntityCollection<Stop> {
-//     pub fn new(origin: geo::Point) -> Self {
-//         Self {
-//             collection: HashMap::new(),
-//             origin
-//         }
-//     }
-
-//     pub fn load(&mut self) -> Result<()> {
-//         let xdg = util::get_xdg()?;
-//         let stops_path = xdg.find_data_file("stops.txt").unwrap();
-//         let mut rdr = csv::Reader::from_path(stops_path)?;
-//         for rec in rdr.deserialize() {
-//             let row: StopRow = rec?;
-//             let stop = Stop::new(row, self.origin);
-//             self.collection.insert(stop.id.clone(), stop);
-//         }
-//         Ok(())
-//     }
-// }
-
-// impl EntityCollection<BTreeMap<String, Vec<ShapeSeq>>> {
-//     pub fn new(origin: geo::Point) -> Self {
-//         Self {
-//             collection: BTreeMap::new(),
-//             origin,
-//         }
-//     }
-
-//     pub fn load(&mut self) -> Result<()> {
-//         let xdg = util::get_xdg()?;
-//         let stops_path = xdg.find_data_file("shapes.txt").unwrap();
-//         let mut rdr = csv::Reader::from_path(stops_path)?;
-//         for rec in rdr.deserialize() {
-//             let row: ShapeRow = rec?;
-//             let seq = self.collection.entry(row.shape_id).or_insert(Vec::new());
-//             let coord = util::geo::coord_to_xy(
-//                 geo::coord! { x: row.shape_pt_lon, y: row.shape_pt_lat },
-//                 &self.origin,
-//             );
-//             seq.push(ShapeSeq {
-//                 seq: row.shape_pt_sequence,
-//                 coord,
-//             });
-//         }
-
-//         // for key in self.collection.keys() {
-//         //     self.collection.entry(key.clone()).and_modify(|e| e.sort_by(|a, b| a.seq.cmp(&b.seq)));
-//         // }
-//         for value in self.collection.values_mut() {
-//             value.sort_by(|a, b| a.seq.cmp(&b.seq));
-//         }
-//         Ok(())
-//     }
-// }

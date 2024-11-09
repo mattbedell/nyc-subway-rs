@@ -19,6 +19,9 @@ pub struct State<'a> {
     num_vertices: usize,
     camera_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
+    geo_vertex_buffer: wgpu::Buffer,
+    geo_index_buffer: wgpu::Buffer,
+    geo_range: Range<u32>,
     // index_buffer: wgpu::Buffer,
     // num_indices: u32,
     // poly_slices: Vec<u32>,
@@ -30,6 +33,7 @@ impl<'a> State<'a> {
         window: &'a Window,
         camera: CameraUniform,
         static_verts: &[Vertex],
+        geo: lyon::tessellation::VertexBuffers<Vertex, u32>
     ) -> State<'a> {
         let size = window.inner_size();
 
@@ -234,6 +238,17 @@ impl<'a> State<'a> {
             usage: wgpu::BufferUsages::VERTEX,
         });
 
+        let geo_vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Vertex Buffer"),
+            contents: bytemuck::cast_slice(&geo.vertices[..]),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+
+        let geo_index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Vertex Buffer"),
+            contents: bytemuck::cast_slice(&geo.indices[..]),
+            usage: wgpu::BufferUsages::INDEX,
+        });
         // let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         //     label: Some("Index Buffer"),
         //     contents: bytemuck::cast_slice(&bb[..]),
@@ -258,6 +273,9 @@ impl<'a> State<'a> {
             num_vertices: static_verts.len(),
             camera_buffer,
             camera_bind_group,
+            geo_vertex_buffer,
+            geo_index_buffer,
+            geo_range: 0..geo.indices.len() as u32,
             // index_buffer,
             // num_indices: INDICES.len() as u32,
             // poly_slices,
@@ -332,6 +350,9 @@ impl<'a> State<'a> {
             render_pass.draw(0..self.num_vertices as u32, 0..1);
 
 
+            render_pass.set_vertex_buffer(0, self.geo_vertex_buffer.slice(..));
+            render_pass.set_index_buffer(self.geo_index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+            render_pass.draw_indexed(self.geo_range.clone(), 0, 0..1);
             // let mut last_idx = 0;
             // println!("RANGE {:?} TOTAL: {:?}", self.poly_slices, self.num_vertices);
             // for idx in &self.poly_slices {

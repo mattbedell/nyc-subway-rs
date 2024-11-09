@@ -1,7 +1,12 @@
 use std::sync::mpsc::{channel, TryRecvError};
 use std::thread;
 use std::time::{Duration, Instant};
+use lyon::geom::point;
+use lyon::path::Path;
+use lyon::tessellation::{BuffersBuilder, StrokeOptions, StrokeTessellator, StrokeVertex, VertexBuffers};
 use tokio;
+
+use lyon;
 
 use winit::{
     dpi::PhysicalSize,
@@ -45,11 +50,13 @@ async fn main() -> Result<()> {
     }
 
     let mut boros = entities::Boro::load_collection()?;
+    let mut shapes = entities::ShapeSeq::load_collection()?;
 
     let o_rect = boros.bounding_rect().unwrap();
     let origin: Point = o_rect.center().into();
-    boros.translate_origin_from(&origin);
 
+    boros.translate_origin_from(&origin);
+    shapes.translate_origin_from(&origin);
 
     let boros_rect = boros.bounding_rect().unwrap();
     let v_scale = 1.;
@@ -76,6 +83,34 @@ async fn main() -> Result<()> {
         })
         .collect();
 
+    let mut geo: VertexBuffers<Vertex, u32> = VertexBuffers::new();
+    let mut builder = Path::builder();
+
+    for shape in shapes.values() {
+        let first = shape[0].coord();
+        builder.begin(point(first.x as f32, first.y as f32));
+        for seq in &shape[1..] {
+            let coord = seq.coord();
+            builder.line_to(point(coord.x as f32, coord.y as f32));
+        }
+        builder.end(false);
+    }
+
+    let path = builder.build();
+
+    let mut tess = StrokeTessellator::new();
+
+
+    tess.tessellate_path(&path, &StrokeOptions::default().with_line_width(70.), &mut BuffersBuilder::new(&mut geo, |vertex: StrokeVertex| {
+        let pos = vertex.position().to_array();
+        Vertex {
+            position: [pos[0], pos[1], 0.0],
+            normal: [0.0, 0.0, 0.0],
+            color: [1.0, 1.0, 1.0],
+            miter: 0.0,
+        }
+    })).unwrap();
+
     let event_loop = EventLoop::new().unwrap();
     let window = WindowBuilder::new().build(&event_loop).unwrap();
     window.set_min_inner_size(Some(PhysicalSize::new(1600, 1600)));
@@ -85,6 +120,7 @@ async fn main() -> Result<()> {
         &window,
         camera_uniform,
         &boro_vertices[..],
+        geo,
     )
     .await;
 
