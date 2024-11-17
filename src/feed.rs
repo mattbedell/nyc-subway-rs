@@ -1,12 +1,13 @@
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     iter::Cycle,
-    slice::Iter, sync::mpsc::Sender,
+    slice::Iter,
+    sync::mpsc::Sender,
 };
 
 use geo::Coord;
 use lyon::{
-    geom::point,
+    geom::{euclid::num::Floor, point},
     tessellation::{BuffersBuilder, FillOptions, FillTessellator, FillVertex, VertexBuffers},
 };
 use prost::Message;
@@ -18,6 +19,7 @@ use crate::{
     render::Vertex,
 };
 
+#[derive(Debug)]
 pub enum Feed {
     ACE,
     G,
@@ -125,36 +127,45 @@ impl<'a> FeedManager<'a> {
         }
 
         let feed = &mut self.feeds[self.feed_idx];
-        self.feed_idx += 1;
 
-        if let Some(_) = feed.update() {
-            self.stop_vertices.clear();
-            let mut active_stops: Vec<_> = self
-                .feeds
-                .iter()
-                .flat_map(|feed| feed.active_stops.values())
-                .collect();
-            active_stops.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+        let batch = feed.queue.len() as f32 / 10.;
 
-            for stop in active_stops {
-                let (point, color) = stop.render.unwrap();
-                let _ = self.tessellator.tessellate_circle(
-                    point,
-                    200.,
-                    &FillOptions::default(),
-                    &mut BuffersBuilder::new(&mut self.stop_vertices, |vertex: FillVertex| Vertex {
-                        position: vertex.position().to_3d().to_array(),
-                        normal: [0.0, 0.0, 0.0],
-                        color,
-                        miter: 0.0,
-                    }),
-                );
+        for _ in 0..batch.ceil().max(1.) as u32 {
+            let feed = &mut self.feeds[self.feed_idx];
+            if let Some(_) = feed.update() {
+                self.stop_vertices.clear();
+                let mut active_stops: Vec<_> = self
+                    .feeds
+                    .iter()
+                    .flat_map(|feed| feed.active_stops.values())
+                    .collect();
+                active_stops.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+
+                for stop in active_stops {
+                    let (point, color) = stop.render.unwrap();
+                    let _ = self.tessellator.tessellate_circle(
+                        point,
+                        200.,
+                        &FillOptions::default(),
+                        &mut BuffersBuilder::new(&mut self.stop_vertices, |vertex: FillVertex| {
+                            Vertex {
+                                position: vertex.position().to_3d().to_array(),
+                                normal: [0.0, 0.0, 0.0],
+                                color,
+                                miter: 0.0,
+                            }
+                        }),
+                    );
+                }
+
+                self.tx.send(self.stop_vertices.clone()).unwrap();
+            } else {
+                feed.fetch(&self.client);
+                feed.update();
+                break;
             }
-
-            self.tx.send(self.stop_vertices.clone()).unwrap();
-        } else {
-            feed.fetch(&self.client);
         }
+    self.feed_idx += 1;
     }
 }
 
@@ -172,10 +183,8 @@ impl FeedProcessor<'_> {
                     .map_or_else(|| Coord::zero(), |s| s.coord);
 
                 feed_entity.render = Some((point(coord.x, coord.y), color));
-                self.active_stops.insert(
-                    feed_entity.trip_id.to_owned(),
-                    feed_entity,
-                );
+                self.active_stops
+                    .insert(feed_entity.trip_id.to_owned(), feed_entity);
                 Some(())
             }
             Some(FeedOp::Remove(trip_id)) => {
@@ -192,6 +201,7 @@ impl FeedProcessor<'_> {
         let timestamp = msg.header.timestamp();
 
         if self.fetched_at >= timestamp {
+            println!("SKIP: {:?}", self.feed);
             return;
         }
         self.fetched_at = timestamp;
@@ -243,7 +253,8 @@ impl FeedProcessor<'_> {
         // queue remove old stops from state
         for prev in self.active_stops.values() {
             if current_stopped.contains_key(&prev.trip_id) == false {
-                self.queue.push_back(FeedOp::Remove(prev.trip_id.to_owned()));
+                self.queue
+                    .push_back(FeedOp::Remove(prev.trip_id.to_owned()));
             }
         }
 
