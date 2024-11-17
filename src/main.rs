@@ -76,7 +76,7 @@ async fn main() -> Result<()> {
     stops.translate_origin_from(&origin);
     let rc_stops = Arc::new(stops);
     let boros_rect = boros.bounding_rect().unwrap();
-    let v_scale = 1.;
+    let v_scale = 0.8;
     let mut viewport = Rect::new(
         Coord::zero(),
         Coord {
@@ -84,7 +84,7 @@ async fn main() -> Result<()> {
             y: boros_rect.height().max(boros_rect.width()) * v_scale,
         },
     );
-    viewport.translate_mut(viewport.center().x * -1. * 0.8, viewport.center().y * -1.);
+    viewport.translate_mut(viewport.center().x * -1. * 0.8, viewport.center().y * -1. * 0.82);
 
     let camera_uniform = CameraUniform::new(viewport);
     let boro_vertices: Vec<_> = boros
