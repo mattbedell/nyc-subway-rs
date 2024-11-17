@@ -1,3 +1,4 @@
+use feed::FeedManager;
 use lyon::geom::point;
 use lyon::path::{Path, Winding};
 use lyon::tessellation::{
@@ -33,13 +34,14 @@ use geo::{
     TriangulateEarcut,
 };
 
-use entities::{CollectableEntity, Route};
+use entities::{CollectibleEntity, Route};
 use render::{CameraUniform, Vertex};
 use util::static_data::{
     self, BOROUGH_BOUNDARIES_STATIC, COASTLINE_STATIC, GTFS_STATIC, PARKS_STATIC,
 };
 
 mod entities;
+mod feed;
 mod proto;
 mod render;
 mod util;
@@ -108,7 +110,7 @@ async fn main() -> Result<()> {
     let mut shapes = entities::ShapeSeq::load_collection()?;
     let mut stops = entities::Stop::load_collection()?;
     let mut parks = entities::Park::load_collection()?;
-    let mut routes = entities::Route::load_collection()?;
+    let routes = entities::Route::load_collection()?;
 
     let o_rect = boros.bounding_rect().unwrap();
     let origin: Point<f32> = o_rect.center().into();
@@ -218,83 +220,10 @@ async fn main() -> Result<()> {
     let (tx, rx) = channel();
     let stops_collection = rc_stops.clone();
     thread::spawn(move || {
-        let client = Client::new();
-        let mut active_stops: HashMap<String, (u64, String)> = HashMap::new();
-        let mut stop_time_updates: HashMap<String, String> = HashMap::new();
-        let mut stop_vertices: VertexBuffers<Vertex, u32> = VertexBuffers::new();
-        let mut fill_tessellator = FillTessellator::new();
-        let mut feed_msg_ts: HashMap<&Feed, u64> = HashMap::new();
+        let mut feed_manager = FeedManager::new(&stops_collection, &routes, tx);
+
         loop {
-            for feed in FEEDS.iter() {
-                let response = client.get(feed.endpoint()).send().unwrap();
-
-                let msg = FeedMessage::decode(response.bytes().unwrap()).unwrap();
-
-                let timestamp = msg.header.timestamp();
-
-                let mut vehicle_updates = Vec::new();
-                for entity in msg.entity.iter() {
-                    if let Some(vehicle_pos) = &entity.vehicle {
-                        vehicle_updates.push(vehicle_pos);
-                    }
-
-                    if let Some(trip_update) = &entity.trip_update {
-                        let trip_id = trip_update.trip.trip_id();
-                        if let Some(stop_update) = trip_update.stop_time_update.first() {
-                            let stop_id = stop_update.stop_id();
-                            stop_time_updates.insert(trip_id.into(), stop_id.into());
-                        }
-                    }
-                }
-
-                for vehicle_pos in vehicle_updates {
-                    if vehicle_pos.stop_id.is_some() && vehicle_pos.trip.is_some() {
-                        let trip_id = vehicle_pos.trip.as_ref().unwrap().trip_id();
-                        if let VehicleStopStatus::StoppedAt = vehicle_pos.current_status() {
-                            if let Some(stop_id) = stop_time_updates.get(trip_id) {
-                                let timestamp = vehicle_pos.timestamp();
-                                let trip = vehicle_pos.trip.clone().unwrap();
-                                if vehicle_pos.stop_id() == *stop_id && trip.route_id.is_some() {
-                                    let route_id = trip.route_id();
-                                    active_stops
-                                        .entry(stop_id.to_string())
-                                        .and_modify(|e| {
-                                            if e.0 < timestamp {
-                                                e.0 = timestamp;
-                                                e.1 = route_id.to_owned();
-                                            }
-                                        })
-                                        .or_insert_with(|| (timestamp, route_id.to_owned()));
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            stop_time_updates.drain();
-            stop_vertices.clear();
-            for (stop_id, (_, route_id)) in active_stops.drain() {
-                let color = routes.get(&route_id).map_or([0.0, 0.0, 0.0], |r| r.color());
-                if let Some(stop) = stops_collection.get(&stop_id) {
-                    fill_tessellator
-                        .tessellate_circle(
-                            point(stop.coord.x, stop.coord.y),
-                            200.,
-                            &FillOptions::default(),
-                            &mut BuffersBuilder::new(&mut stop_vertices, |vertex: FillVertex| {
-                                Vertex {
-                                    position: vertex.position().to_3d().to_array(),
-                                    normal: [0.0, 0.0, 0.0],
-                                    color,
-                                    miter: 0.0,
-                                }
-                            }),
-                        )
-                        .unwrap();
-                }
-            }
-
-            tx.send(stop_vertices.clone()).unwrap();
+            feed_manager.update();
             thread::sleep(Duration::from_millis(200));
         }
     });

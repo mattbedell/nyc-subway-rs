@@ -101,7 +101,7 @@ pub struct EntityCollection<T> {
 
 impl<K, V> EntityCollection<HashMap<K, V>>
 where
-    V: CollectableEntity,
+    V: CollectibleEntity,
 {
     pub fn translate_origin_from(&mut self, point: &Point) {
         for val in self.collection.values_mut() {
@@ -143,7 +143,7 @@ impl<T> DerefMut for EntityCollection<T> {
     }
 }
 
-pub trait CollectableEntity {
+pub trait CollectibleEntity {
     type Collection;
     fn coord(&self) -> Coord;
     fn set_coord(&mut self, coord: Coord);
@@ -151,7 +151,7 @@ pub trait CollectableEntity {
     fn load_collection() -> Result<Self::Collection>;
 }
 
-impl CollectableEntity for Stop {
+impl CollectibleEntity for Stop {
     type Collection = EntityCollection<HashMap<String, Self>>;
     fn coord(&self) -> geo::Coord<f32> {
         self.coord
@@ -187,7 +187,7 @@ impl CollectableEntity for Stop {
     }
 }
 
-impl CollectableEntity for ShapeSeq {
+impl CollectibleEntity for ShapeSeq {
     type Collection = EntityCollection<BTreeMap<String, Vec<Self>>>;
     fn coord(&self) -> Coord {
         self.coord
@@ -227,7 +227,7 @@ impl CollectableEntity for ShapeSeq {
     }
 }
 
-impl CollectableEntity for Route {
+impl CollectibleEntity for Route {
     type Collection = EntityCollection<HashMap<String, Route>>;
     fn coord(&self) -> Coord {
         Coord::zero()
@@ -254,7 +254,7 @@ impl CollectableEntity for Route {
     }
 }
 
-impl CollectableEntity for Boro {
+impl CollectibleEntity for Boro {
     type Collection = EntityCollection<GeometryCollection<f32>>;
     fn coord(&self) -> Coord {
         self.geometry.bounding_rect().unwrap().center()
@@ -292,7 +292,7 @@ impl CollectableEntity for Boro {
     }
 }
 
-impl CollectableEntity for Park {
+impl CollectibleEntity for Park {
     type Collection = EntityCollection<GeometryCollection<f32>>;
     fn coord(&self) -> Coord {
         self.geometry.bounding_rect().unwrap().center()
