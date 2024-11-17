@@ -1,20 +1,14 @@
 use feed::FeedManager;
 use lyon::geom::point;
-use lyon::path::{Path, Winding};
+use lyon::path::Path;
 use lyon::tessellation::{
     BuffersBuilder, FillOptions, FillTessellator, FillVertex, StrokeOptions, StrokeTessellator,
     StrokeVertex, VertexBuffers,
 };
-use prost::Message;
-use proto::gtfs::realtime::vehicle_position::VehicleStopStatus;
-use proto::gtfs::realtime::{FeedMessage, TripUpdate};
-use reqwest::blocking::Client;
-use std::collections::HashMap;
-use std::iter::Extend;
 use std::sync::mpsc::{channel, TryRecvError};
 use std::sync::Arc;
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio;
 
 use lyon;
@@ -30,11 +24,11 @@ use winit::{
 use anyhow::Result;
 use env_logger;
 use geo::{
-    BooleanOps, BoundingRect, Coord, CoordsIter, Intersects, MultiPolygon, Point, Rect, Translate,
+    BoundingRect, Coord, CoordsIter, MultiPolygon, Point, Rect, Translate,
     TriangulateEarcut,
 };
 
-use entities::{CollectibleEntity, Route};
+use entities::CollectibleEntity;
 use render::{CameraUniform, Vertex};
 use util::static_data::{
     self, BOROUGH_BOUNDARIES_STATIC, COASTLINE_STATIC, GTFS_STATIC, PARKS_STATIC,
@@ -45,45 +39,6 @@ mod feed;
 mod proto;
 mod render;
 mod util;
-
-const FEEDS: [Feed; 8] = [
-    Feed::ACE,
-    Feed::G,
-    Feed::NQRW,
-    Feed::S1234567,
-    Feed::BDFM,
-    Feed::JZ,
-    Feed::L,
-    Feed::SIR,
-];
-// const FEEDS: [Feed; 1] = [Feed::G];
-
-#[derive(Debug)]
-enum Feed {
-    ACE,
-    G,
-    NQRW,
-    S1234567,
-    BDFM,
-    JZ,
-    L,
-    SIR,
-}
-
-impl Feed {
-    pub fn endpoint(&self) -> &str {
-        match self {
-            Self::ACE => "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-ace",
-            Self::G => "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-g",
-            Self::NQRW => "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-nqrw",
-            Self::S1234567 => "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs",
-            Self::BDFM => "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-bdfm",
-            Self::JZ => "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-jz",
-            Self::L => "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-l",
-            Self::SIR => "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-si",
-        }
-    }
-}
 
 #[tokio::main]
 async fn main() -> Result<()> {
