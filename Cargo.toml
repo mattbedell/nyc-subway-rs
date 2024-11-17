@@ -27,6 +27,8 @@ wgpu = { version =  "22.0", features = ["webgl"] }
 bytemuck = { version = "1.16", features = ["derive"] }
 cgmath = "0.18.0"
 lyon = "1.0.1"
+hex = "0.4.3"
+srgb = "0.3.3"
 
 [build-dependencies]
 prost-build = "0.13.2"

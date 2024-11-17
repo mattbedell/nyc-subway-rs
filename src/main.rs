@@ -33,7 +33,7 @@ use geo::{
     TriangulateEarcut,
 };
 
-use entities::CollectableEntity;
+use entities::{CollectableEntity, Route};
 use render::{CameraUniform, Vertex};
 use util::static_data::{
     self, BOROUGH_BOUNDARIES_STATIC, COASTLINE_STATIC, GTFS_STATIC, PARKS_STATIC,
@@ -44,16 +44,30 @@ mod proto;
 mod render;
 mod util;
 
-const FEEDS: [Feed; 1] = [Feed::G];
+const FEEDS: [Feed; 8] = [Feed::ACE, Feed::G, Feed::NQRW, Feed::S1234567, Feed::BDFM, Feed::JZ, Feed::L, Feed::SIR];
 
 enum Feed {
+    ACE,
     G,
+    NQRW,
+    S1234567,
+    BDFM,
+    JZ,
+    L,
+    SIR,
 }
 
 impl Feed {
     pub fn endpoint(&self) -> &str {
         match self {
+            Self::ACE => "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-ace",
             Self::G => "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-g",
+            Self::NQRW => "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-nqrw",
+            Self::S1234567 => "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs",
+            Self::BDFM => "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-bdfm",
+            Self::JZ => "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-jz",
+            Self::L => "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-l",
+            Self::SIR => "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-si",
         }
     }
 }
@@ -83,6 +97,7 @@ async fn main() -> Result<()> {
     let mut shapes = entities::ShapeSeq::load_collection()?;
     let mut stops = entities::Stop::load_collection()?;
     let mut parks = entities::Park::load_collection()?;
+    let mut routes = entities::Route::load_collection()?;
 
     let o_rect = boros.bounding_rect().unwrap();
     let origin: Point<f32> = o_rect.center().into();
@@ -196,6 +211,7 @@ async fn main() -> Result<()> {
         let mut active_stops: HashMap<String, (u64, String)> = HashMap::new();
         let mut stop_vertices: VertexBuffers<Vertex, u32> = VertexBuffers::new();
         let mut fill_tessellator = FillTessellator::new();
+        println!("{:?}", routes.values().collect::<Vec<&Route>>());
         loop {
             for feed in FEEDS.iter() {
                 let response = client.get(feed.endpoint()).send().unwrap();
@@ -236,18 +252,19 @@ async fn main() -> Result<()> {
                 }
             }
             stop_vertices.clear();
-            for (stop_id, (_, _route_id)) in active_stops.drain() {
+            for (stop_id, (_, route_id)) in active_stops.drain() {
+                let color = routes.get(&route_id).map_or([0.0, 0.0, 0.0], |r| r.color());
                 if let Some(stop) = stops_collection.get(&stop_id) {
                     fill_tessellator
                         .tessellate_circle(
                             point(stop.coord.x, stop.coord.y),
-                            150.,
+                            200.,
                             &FillOptions::default(),
                             &mut BuffersBuilder::new(&mut stop_vertices, |vertex: FillVertex| {
                                 Vertex {
                                     position: vertex.position().to_3d().to_array(),
                                     normal: [0.0, 0.0, 0.0],
-                                    color: [0.0, 1.0, 0.0],
+                                    color,
                                     miter: 0.0,
                                 }
                             }),
@@ -257,7 +274,7 @@ async fn main() -> Result<()> {
             }
 
             tx.send(stop_vertices.clone()).unwrap();
-            thread::sleep(Duration::from_secs(1));
+            thread::sleep(Duration::from_millis(200));
         }
     });
 

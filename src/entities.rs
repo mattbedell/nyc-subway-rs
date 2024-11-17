@@ -65,6 +65,36 @@ pub struct ShapeSeq {
     coord: Coord,
 }
 
+#[derive(Deserialize, Debug)]
+pub struct Route {
+    #[serde(rename = "route_id")]
+    id: String,
+    #[serde(rename = "route_color")]
+    #[serde(deserialize_with = "hex_to_srgb")]
+    color: [f32; 3],
+}
+
+impl Route {
+    pub fn color(&self) -> [f32; 3] {
+        self.color
+    }
+}
+
+fn hex_to_srgb<'de, D>(deserializer: D) -> Result<[f32; 3], D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let mut color = [0; 3];
+    let mut hex_str: &str = serde::Deserialize::deserialize(deserializer)?;
+
+    if hex_str.len() != 6 {
+        hex_str = "FFFFFF";
+    }
+    hex::decode_to_slice(hex_str, &mut color).unwrap();
+    let linear_color = srgb::gamma::linear_from_u8(color);
+    Ok(linear_color)
+}
+
 pub struct EntityCollection<T> {
     collection: T,
 }
@@ -82,8 +112,7 @@ where
     }
 }
 
-impl EntityCollection<BTreeMap<String, Vec<ShapeSeq>>>
-{
+impl EntityCollection<BTreeMap<String, Vec<ShapeSeq>>> {
     pub fn translate_origin_from(&mut self, point: &Point) {
         for shape in self.collection.values_mut() {
             for seq in shape.iter_mut() {
@@ -185,7 +214,8 @@ impl CollectableEntity for ShapeSeq {
                 coord: geo::coord! { x: row.shape_pt_lon, y: row.shape_pt_lat },
                 seq: row.shape_pt_sequence,
             };
-            let seq = collection.entry(row.shape_id.clone())
+            let seq = collection
+                .entry(row.shape_id.clone())
                 .or_insert_with(|| Vec::new());
             seq.push(shape);
         }
@@ -193,6 +223,33 @@ impl CollectableEntity for ShapeSeq {
             seq.sort_by(|a, b| a.seq.cmp(&b.seq));
         }
 
+        Ok(collection)
+    }
+}
+
+impl CollectableEntity for Route {
+    type Collection = EntityCollection<HashMap<String, Route>>;
+    fn coord(&self) -> Coord {
+        Coord::zero()
+    }
+
+    fn set_coord(&mut self, _coord: Coord) {}
+
+    fn collection() -> Self::Collection {
+        EntityCollection {
+            collection: HashMap::new(),
+        }
+    }
+
+    fn load_collection() -> Result<Self::Collection> {
+        let xdg = util::get_xdg()?;
+        let path = xdg.find_data_file("routes.txt").unwrap();
+        let mut rdr = csv::Reader::from_path(path)?;
+        let mut collection = Self::collection();
+        for rec in rdr.deserialize() {
+            let row: Route = rec?;
+            collection.insert(row.id.clone(), row);
+        }
         Ok(collection)
     }
 }
@@ -205,7 +262,8 @@ impl CollectableEntity for Boro {
 
     fn set_coord(&mut self, coord: Coord) {
         let center = self.coord();
-        self.geometry = self.geometry
+        self.geometry = self
+            .geometry
             .translate(coord.x - center.x, coord.y - center.y);
     }
     fn collection() -> Self::Collection {
@@ -242,7 +300,8 @@ impl CollectableEntity for Park {
 
     fn set_coord(&mut self, coord: Coord) {
         let center = self.coord();
-        self.geometry = self.geometry
+        self.geometry = self
+            .geometry
             .translate(coord.x - center.x, coord.y - center.y);
     }
     fn collection() -> Self::Collection {
@@ -254,8 +313,7 @@ impl CollectableEntity for Park {
         let xdg = util::get_xdg()?;
         let feature_reader = {
             use std::fs::File;
-            let file =
-                File::open(xdg.find_data_file(PARKS_STATIC.1).unwrap()).unwrap();
+            let file = File::open(xdg.find_data_file(PARKS_STATIC.1).unwrap()).unwrap();
             geojson::FeatureReader::from_reader(file)
         };
 
