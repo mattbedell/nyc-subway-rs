@@ -173,14 +173,16 @@ impl FeedProcessor<'_> {
     fn update(&mut self) -> Option<()> {
         match self.queue.pop_front() {
             Some(FeedOp::Add(mut feed_entity)) => {
-                let color = self
-                    .routes
-                    .get(&feed_entity.route_id)
-                    .map_or([0.0, 0.0, 0.0], |r| r.color());
-                let coord = self
-                    .stops
-                    .get(&feed_entity.stop_id)
-                    .map_or_else(|| Coord::zero(), |s| s.coord);
+                let route = self.routes.get(&feed_entity.route_id);
+                let stop = self.stops.get(&feed_entity.stop_id);
+
+                // some stops are not public stations and are not part of the static schedule, e.g. R60S, R60N
+                if route.is_none() || stop.is_none() {
+                    return Some(());
+                }
+
+                let color = route.unwrap().color();
+                let coord = stop.unwrap().coord;
 
                 feed_entity.render = Some((point(coord.x, coord.y), color));
                 self.active_stops
@@ -201,7 +203,6 @@ impl FeedProcessor<'_> {
         let timestamp = msg.header.timestamp();
 
         if self.fetched_at >= timestamp {
-            println!("SKIP: {:?}", self.feed);
             return;
         }
         self.fetched_at = timestamp;
@@ -229,6 +230,9 @@ impl FeedProcessor<'_> {
                 let trip_id = trip_update.trip.trip_id();
                 if let Some(stop_update) = trip_update.stop_time_update.first() {
                     let stop_id = stop_update.stop_id();
+                    if let None = stop_update.stop_id {
+                        println!("NO STOP ID FOR TRIP {trip_id}");
+                    }
                     latest_trip_stop.insert(trip_id.into(), stop_id.into());
                 }
             }
