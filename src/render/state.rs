@@ -1,7 +1,11 @@
 use geo::{Coord, Rect};
+use lyon::tessellation::VertexBuffers;
+use prost::bytes::BufMut;
+use std::io::Write;
+use std::num::NonZero;
 use std::ops::Range;
 use wgpu::util::DeviceExt;
-use wgpu::Buffer;
+use wgpu::{Buffer, BufferDescriptor};
 use winit::event::WindowEvent;
 use winit::window::Window;
 
@@ -16,6 +20,9 @@ pub struct State<'a> {
     clear_color: wgpu::Color,
     render_pipeline: wgpu::RenderPipeline,
     vertex_buffer: wgpu::Buffer,
+    active_stops_vertex_buffer: wgpu::Buffer,
+    active_stops_index_buffer: wgpu::Buffer,
+    active_stops_range: Range<u32>,
     num_vertices: usize,
     camera_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
@@ -169,16 +176,33 @@ impl<'a> State<'a> {
             usage: wgpu::BufferUsages::VERTEX,
         });
 
+        let geo_vslice: &[u8] = bytemuck::cast_slice(&geo.vertices[..]);
+        let geo_islice: &[u8] = bytemuck::cast_slice(&geo.indices[..]);
+
         let geo_vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Vertex Buffer"),
-            contents: bytemuck::cast_slice(&geo.vertices[..]),
+            label: Some("Geo Vertex Buffer"),
+            contents: geo_vslice,
             usage: wgpu::BufferUsages::VERTEX,
         });
 
         let geo_index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Vertex Buffer"),
-            contents: bytemuck::cast_slice(&geo.indices[..]),
+            label: Some("Geo Index Buffer"),
+            contents: geo_islice,
             usage: wgpu::BufferUsages::INDEX,
+        });
+
+        let active_stops_vertex_buffer = device.create_buffer(&BufferDescriptor {
+            label: Some("Active Stops Vertex Buffer"),
+            size: geo_vslice.len() as u64,
+            mapped_at_creation: false,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+        });
+
+        let active_stops_index_buffer = device.create_buffer(&BufferDescriptor {
+            label: Some("Active Stops Index Buffer"),
+            size: geo_islice.len() as u64,
+            mapped_at_creation: false,
+            usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
         });
 
         Self {
@@ -196,6 +220,9 @@ impl<'a> State<'a> {
             },
             render_pipeline,
             vertex_buffer,
+            active_stops_vertex_buffer,
+            active_stops_index_buffer,
+            active_stops_range: 0..0 as u32,
             num_vertices: static_verts.len(),
             camera_buffer,
             camera_bind_group,
@@ -238,7 +265,33 @@ impl<'a> State<'a> {
         false
     }
 
-    pub fn update(&mut self) {}
+    pub fn update_stops(&mut self, active_stops: VertexBuffers<Vertex, u32>) {
+        let v_slice: &[u8] = bytemuck::cast_slice(&active_stops.vertices[..]);
+        let i_slice: &[u8] = bytemuck::cast_slice(&active_stops.indices[..]);
+        let mut vbuf = self
+            .queue
+            .write_buffer_with(
+                &self.active_stops_vertex_buffer,
+                0,
+                NonZero::new(v_slice.len() as u64).unwrap(),
+            )
+            .unwrap();
+
+        let mut ibuf = self
+            .queue
+            .write_buffer_with(
+                &self.active_stops_index_buffer,
+                0,
+                NonZero::new(i_slice.len() as u64).unwrap(),
+            )
+            .unwrap();
+        let mut vbw = vbuf.writer();
+        let mut ibw = ibuf.writer();
+        vbw.write_all(v_slice).unwrap();
+        ibw.write_all(i_slice).unwrap();
+
+        self.active_stops_range = 0..active_stops.indices.len() as u32;
+    }
 
     pub fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
         let output = self.surface.get_current_texture()?;
@@ -275,6 +328,13 @@ impl<'a> State<'a> {
             render_pass
                 .set_index_buffer(self.geo_index_buffer.slice(..), wgpu::IndexFormat::Uint32);
             render_pass.draw_indexed(self.geo_range.clone(), 0, 0..1);
+
+            render_pass.set_vertex_buffer(0, self.active_stops_vertex_buffer.slice(..));
+            render_pass.set_index_buffer(
+                self.active_stops_index_buffer.slice(..),
+                wgpu::IndexFormat::Uint32,
+            );
+            render_pass.draw_indexed(self.active_stops_range.clone(), 0, 0..1);
         }
         self.queue.submit(std::iter::once(encoder.finish()));
         output.present();

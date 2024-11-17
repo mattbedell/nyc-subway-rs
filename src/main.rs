@@ -4,8 +4,14 @@ use lyon::tessellation::{
     BuffersBuilder, FillOptions, FillTessellator, FillVertex, StrokeOptions, StrokeTessellator,
     StrokeVertex, VertexBuffers,
 };
+use prost::Message;
+use proto::gtfs::realtime::vehicle_position::VehicleStopStatus;
+use proto::gtfs::realtime::{FeedMessage, TripUpdate};
+use reqwest::blocking::Client;
+use std::collections::HashMap;
 use std::iter::Extend;
 use std::sync::mpsc::{channel, TryRecvError};
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 use tokio;
@@ -23,7 +29,8 @@ use winit::{
 use anyhow::Result;
 use env_logger;
 use geo::{
-    BooleanOps, BoundingRect, Coord, CoordsIter, Intersects, MultiPolygon, Point, Rect, Translate, TriangulateEarcut
+    BooleanOps, BoundingRect, Coord, CoordsIter, Intersects, MultiPolygon, Point, Rect, Translate,
+    TriangulateEarcut,
 };
 
 use entities::CollectableEntity;
@@ -36,6 +43,20 @@ mod entities;
 mod proto;
 mod render;
 mod util;
+
+const FEEDS: [Feed; 1] = [Feed::G];
+
+enum Feed {
+    G,
+}
+
+impl Feed {
+    pub fn endpoint(&self) -> &str {
+        match self {
+            Self::G => "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-g",
+        }
+    }
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -70,7 +91,7 @@ async fn main() -> Result<()> {
     parks.translate_origin_from(&origin);
     shapes.translate_origin_from(&origin);
     stops.translate_origin_from(&origin);
-
+    let rc_stops = Arc::new(stops);
     let boros_rect = boros.bounding_rect().unwrap();
     let v_scale = 1.;
     let mut viewport = Rect::new(
@@ -149,7 +170,7 @@ async fn main() -> Result<()> {
             color: [1.0, 1.0, 1.0],
             miter: 0.0,
         });
-        for stop in stops.values() {
+        for stop in rc_stops.values() {
             fill_tessellator
                 .tessellate_circle(
                     point(stop.coord.x, stop.coord.y),
@@ -169,12 +190,75 @@ async fn main() -> Result<()> {
     let mut state = render::State::new(&window, camera_uniform, &boro_vertices[..], geo).await;
 
     let (tx, rx) = channel();
+    let stops_collection = rc_stops.clone();
+    thread::spawn(move || {
+        let client = Client::new();
+        let mut active_stops: HashMap<String, (u64, String)> = HashMap::new();
+        let mut stop_vertices: VertexBuffers<Vertex, u32> = VertexBuffers::new();
+        let mut fill_tessellator = FillTessellator::new();
+        loop {
+            for feed in FEEDS.iter() {
+                let response = client.get(feed.endpoint()).send().unwrap();
 
-    thread::spawn(move || loop {
-        let now = Instant::now();
-        let msg = format!("hello thread: {:?}", now);
-        tx.send(msg).unwrap();
-        thread::sleep(Duration::from_secs(5))
+                let msg = FeedMessage::decode(response.bytes().unwrap()).unwrap();
+
+                for entity in msg.entity.iter() {
+                    if let Some(TripUpdate {
+                        stop_time_update,
+                        trip,
+                        ..
+                    }) = &entity.trip_update
+                    {}
+
+                    if let Some(vehicle_pos) = &entity.vehicle {
+                        if vehicle_pos.stop_id.is_some() && vehicle_pos.trip.is_some() {
+                            match vehicle_pos.current_status() {
+                                VehicleStopStatus::StoppedAt => {
+                                    let timestamp = vehicle_pos.timestamp();
+                                    let trip = vehicle_pos.trip.clone().unwrap();
+                                    let stop_id = vehicle_pos.stop_id();
+                                    if let Some(route_id) = &trip.route_id {
+                                        active_stops
+                                            .entry(stop_id.into())
+                                            .and_modify(|e| {
+                                                if e.0 < timestamp {
+                                                    e.0 = timestamp;
+                                                    e.1 = route_id.clone();
+                                                }
+                                            })
+                                            .or_insert_with(|| (timestamp, route_id.to_owned()));
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+            }
+            stop_vertices.clear();
+            for (stop_id, (_, _route_id)) in active_stops.drain() {
+                if let Some(stop) = stops_collection.get(&stop_id) {
+                    fill_tessellator
+                        .tessellate_circle(
+                            point(stop.coord.x, stop.coord.y),
+                            150.,
+                            &FillOptions::default(),
+                            &mut BuffersBuilder::new(&mut stop_vertices, |vertex: FillVertex| {
+                                Vertex {
+                                    position: vertex.position().to_3d().to_array(),
+                                    normal: [0.0, 0.0, 0.0],
+                                    color: [0.0, 1.0, 0.0],
+                                    miter: 0.0,
+                                }
+                            }),
+                        )
+                        .unwrap();
+                }
+            }
+
+            tx.send(stop_vertices.clone()).unwrap();
+            thread::sleep(Duration::from_secs(1));
+        }
     });
 
     let _ = event_loop.run(move |event, control_flow| match event {
@@ -200,7 +284,9 @@ async fn main() -> Result<()> {
                     WindowEvent::RedrawRequested => {
                         state.window().request_redraw();
                         match rx.try_recv() {
-                            Ok(data) => println!("{}", data),
+                            Ok(data) => {
+                                state.update_stops(data);
+                            }
                             Err(TryRecvError::Disconnected) => {
                                 panic!("Unable to fetch data");
                             }
@@ -211,7 +297,6 @@ async fn main() -> Result<()> {
                         //     return;
                         // }
 
-                        state.update();
                         match state.render() {
                             Ok(_) => {}
                             // Reconfigure the surface if it's lost or outdated
