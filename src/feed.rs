@@ -1,22 +1,14 @@
+use prost::Message;
+use reqwest::blocking::Client;
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
-    iter::Cycle,
-    slice::Iter,
+    collections::{BTreeMap, HashMap, VecDeque},
     sync::mpsc::Sender,
 };
 
-use geo::Coord;
-use lyon::{
-    geom::{euclid::num::Floor, point},
-    tessellation::{BuffersBuilder, FillOptions, FillTessellator, FillVertex, VertexBuffers},
-};
-use prost::Message;
-use reqwest::blocking::Client;
-
 use crate::{
-    entities::{CollectibleEntity, EntityCollection, Route, Stop},
+    entities::{EntityCollection, Route, Stop},
     proto::gtfs::realtime::{vehicle_position::VehicleStopStatus, FeedMessage},
-    render::Vertex,
+    render::stop::{StopInstance, StopState},
 };
 
 #[derive(Debug)]
@@ -61,16 +53,16 @@ impl Feed {
     }
 }
 
-struct FeedEntity {
-    stop_id: String,
+struct FeedEntity<'a> {
+    stop_id: &'a String,
     route_id: String,
     trip_id: String,
     timestamp: u64,
-    render: Option<(lyon::geom::Point<f32>, [f32; 3])>,
+    color: Option<[f32; 3]>,
 }
 
-enum FeedOp {
-    Add(FeedEntity),
+enum FeedOp<'a> {
+    Add(FeedEntity<'a>),
     Remove(String),
 }
 
@@ -78,25 +70,25 @@ pub struct FeedManager<'a> {
     client: Client,
     feeds: Vec<FeedProcessor<'a>>,
     feed_idx: usize,
-    stop_vertices: VertexBuffers<Vertex, u32>,
-    tessellator: FillTessellator,
-    tx: Sender<VertexBuffers<Vertex, u32>>,
+    tx: Sender<Vec<StopInstance>>,
+    stops: &'a EntityCollection<BTreeMap<String, Stop>>,
+    parent_stops: Vec<&'a String>,
 }
 
 struct FeedProcessor<'a> {
-    stops: &'a EntityCollection<HashMap<String, Stop>>,
+    stops: &'a EntityCollection<BTreeMap<String, Stop>>,
     routes: &'a EntityCollection<HashMap<String, Route>>,
     fetched_at: u64,
-    queue: VecDeque<FeedOp>,
-    active_stops: HashMap<String, FeedEntity>,
+    queue: VecDeque<FeedOp<'a>>,
+    active_stops: HashMap<String, FeedEntity<'a>>,
     feed: &'a Feed,
 }
 
 impl<'a> FeedManager<'a> {
     pub fn new(
-        stops: &'a EntityCollection<HashMap<String, Stop>>,
+        stops: &'a EntityCollection<BTreeMap<String, Stop>>,
         routes: &'a EntityCollection<HashMap<String, Route>>,
-        tx: Sender<VertexBuffers<Vertex, u32>>,
+        tx: Sender<Vec<StopInstance>>,
     ) -> Self {
         let client = Client::new();
         let feeds = FEEDS
@@ -115,8 +107,17 @@ impl<'a> FeedManager<'a> {
             feed_idx: 0,
             client,
             feeds,
-            stop_vertices: VertexBuffers::new(),
-            tessellator: FillTessellator::new(),
+            stops,
+            parent_stops: stops
+                .values()
+                .filter_map(|s| {
+                    if let None = &s.parent {
+                        Some(&s.id)
+                    } else {
+                        None
+                    }
+                })
+                .collect(),
             tx,
         }
     }
@@ -133,7 +134,6 @@ impl<'a> FeedManager<'a> {
         for _ in 0..batch.ceil().max(1.) as u32 {
             let feed = &mut self.feeds[self.feed_idx];
             if let Some(_) = feed.update() {
-                self.stop_vertices.clear();
                 let mut active_stops: Vec<_> = self
                     .feeds
                     .iter()
@@ -141,31 +141,62 @@ impl<'a> FeedManager<'a> {
                     .collect();
                 active_stops.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
 
-                for stop in active_stops {
-                    let (point, color) = stop.render.unwrap();
-                    let _ = self.tessellator.tessellate_circle(
-                        point,
-                        200.,
-                        &FillOptions::default(),
-                        &mut BuffersBuilder::new(&mut self.stop_vertices, |vertex: FillVertex| {
-                            Vertex {
-                                position: vertex.position().to_3d().to_array(),
-                                normal: [0.0, 0.0, 0.0],
-                                color,
-                                miter: 0.0,
-                            }
-                        }),
-                    );
-                }
+                let sorted_stops = active_stops
+                    .into_iter()
+                    .fold(HashMap::new(), |mut acc, fe| {
+                        acc.entry(&fe.stop_id).or_insert(fe);
+                        acc
+                    });
 
-                self.tx.send(self.stop_vertices.clone()).unwrap();
+                let mut stateful_instances: Vec<_> = self
+                    .parent_stops
+                    .iter()
+                    .map(|stop_id| {
+                        if !sorted_stops.contains_key(stop_id) {
+                            let stop = self.stops.get(*stop_id).unwrap();
+                            StopState::Inactive(StopInstance {
+                                position: [stop.coord.x, stop.coord.y, 0.0],
+                                ..Default::default()
+                            })
+                        } else {
+                            let feed_entity = sorted_stops.get(stop_id).unwrap();
+                            let stop = self.stops.get(*stop_id).unwrap();
+                            StopState::Active(StopInstance {
+                                position: [stop.coord.x, stop.coord.y, 0.0],
+                                color: feed_entity.color.unwrap(),
+                                scale: 0.5,
+                            })
+                        }
+                    })
+                    .collect();
+                stateful_instances.sort();
+                let instances: Vec<_> = stateful_instances
+                    .into_iter()
+                    .map(StopInstance::from)
+                    .collect();
+
+                self.tx.send(instances).unwrap();
+                // for (idx, state) in old_state.into_iter().enumerate() {
+                //     if !sorted_stops.contains(&idx) && state == true {
+                //         self.stops[idx] = false;
+                //         self.tx.send(StopState::Inactive(idx)).unwrap();
+                //     }
+
+                //     if sorted_stops.contains(&idx) && state == false {
+                //         self.stops[idx] = true;
+                //         let fe = sorted_stops.get(&idx).unwrap();
+                //         self.tx
+                //             .send(StopState::Active((idx, fe.color.unwrap())))
+                //             .unwrap();
+                //     }
+                // }
             } else {
                 feed.fetch(&self.client);
                 feed.update();
                 break;
             }
         }
-    self.feed_idx += 1;
+        self.feed_idx += 1;
     }
 }
 
@@ -174,17 +205,14 @@ impl FeedProcessor<'_> {
         match self.queue.pop_front() {
             Some(FeedOp::Add(mut feed_entity)) => {
                 let route = self.routes.get(&feed_entity.route_id);
-                let stop = self.stops.get(&feed_entity.stop_id);
 
-                // some stops are not public stations and are not part of the static schedule, e.g. R60S, R60N
-                if route.is_none() || stop.is_none() {
+                if route.is_none() {
                     return Some(());
                 }
 
                 let color = route.unwrap().color();
-                let coord = stop.unwrap().coord;
 
-                feed_entity.render = Some((point(coord.x, coord.y), color));
+                feed_entity.color = Some(color);
                 self.active_stops
                     .insert(feed_entity.trip_id.to_owned(), feed_entity);
                 Some(())
@@ -207,7 +235,7 @@ impl FeedProcessor<'_> {
         }
         self.fetched_at = timestamp;
 
-        let mut latest_trip_stop: HashMap<String, String> = HashMap::new();
+        let mut latest_trip_stop: HashMap<String, &String> = HashMap::new();
         let mut vehicle_updates = Vec::new();
         for entity in msg.entity {
             // get stopped vehicles
@@ -215,13 +243,22 @@ impl FeedProcessor<'_> {
                 if vehicle_pos.stop_id.is_some() && vehicle_pos.trip.is_some() {
                     if let VehicleStopStatus::StoppedAt = vehicle_pos.current_status() {
                         let trip = vehicle_pos.trip.as_ref().unwrap();
-                        vehicle_updates.push(FeedEntity {
-                            trip_id: trip.trip_id().to_owned(),
-                            timestamp: vehicle_pos.timestamp(),
-                            route_id: trip.route_id().to_owned(),
-                            stop_id: vehicle_pos.stop_id().to_owned(),
-                            render: None,
-                        });
+                        let stop_id = vehicle_pos.stop_id().to_owned();
+                        // some stops are not public stations and are not part of the static schedule, e.g. R60S, R60N
+                        if let Some(stop) = self.stops.get(&stop_id) {
+                            let static_stop_id = if let Some(p_stop_id) = &stop.parent {
+                                p_stop_id
+                            } else {
+                                &stop.id
+                            };
+                            vehicle_updates.push(FeedEntity {
+                                trip_id: trip.trip_id().to_owned(),
+                                timestamp: vehicle_pos.timestamp(),
+                                route_id: trip.route_id().to_owned(),
+                                stop_id: static_stop_id,
+                                color: None,
+                            });
+                        }
                     }
                 }
             }
@@ -230,10 +267,15 @@ impl FeedProcessor<'_> {
                 let trip_id = trip_update.trip.trip_id();
                 if let Some(stop_update) = trip_update.stop_time_update.first() {
                     let stop_id = stop_update.stop_id();
-                    if let None = stop_update.stop_id {
-                        println!("NO STOP ID FOR TRIP {trip_id}");
+                    if let Some(stop) = self.stops.get(stop_id) {
+                        let static_stop_id = if let Some(p_stop_id) = &stop.parent {
+                            p_stop_id
+                        } else {
+                            &stop.id
+                        };
+
+                        latest_trip_stop.insert(trip_id.into(), static_stop_id);
                     }
-                    latest_trip_stop.insert(trip_id.into(), stop_id.into());
                 }
             }
         }
@@ -264,7 +306,7 @@ impl FeedProcessor<'_> {
 
         // queue add new stops to state
         for entity in current_stopped.into_values() {
-            if self.active_stops.contains_key(&entity.stop_id) == false {
+            if self.active_stops.contains_key(entity.stop_id) == false {
                 self.queue.push_back(FeedOp::Add(entity));
             }
         }

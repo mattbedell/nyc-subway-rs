@@ -5,6 +5,7 @@ use lyon::tessellation::{
     BuffersBuilder, FillOptions, FillTessellator, FillVertex, StrokeOptions, StrokeTessellator,
     StrokeVertex, VertexBuffers,
 };
+use render::stop::StopInstance;
 use std::sync::mpsc::{channel, TryRecvError};
 use std::sync::Arc;
 use std::thread;
@@ -24,8 +25,7 @@ use winit::{
 use anyhow::Result;
 use env_logger;
 use geo::{
-    BoundingRect, Coord, CoordsIter, MultiPolygon, Point, Rect, Translate,
-    TriangulateEarcut,
+    BoundingRect, Coord, CoordsIter, MultiPolygon, Point, Rect, Translate, TriangulateEarcut,
 };
 
 use entities::CollectibleEntity;
@@ -84,7 +84,10 @@ async fn main() -> Result<()> {
             y: boros_rect.height().max(boros_rect.width()) * v_scale,
         },
     );
-    viewport.translate_mut(viewport.center().x * -1. * 0.8, viewport.center().y * -1. * 0.82);
+    viewport.translate_mut(
+        viewport.center().x * -1. * 0.8,
+        viewport.center().y * -1. * 0.82,
+    );
 
     let camera_uniform = CameraUniform::new(viewport);
     let boro_vertices: Vec<_> = boros
@@ -146,31 +149,51 @@ async fn main() -> Result<()> {
             }),
         )
         .unwrap();
-    {
-        let builder = &mut BuffersBuilder::new(&mut geo, |vertex: FillVertex| Vertex {
-            position: vertex.position().to_3d().to_array(),
-            normal: [0.0, 0.0, 0.0],
-            color: [1.0, 1.0, 1.0],
-            miter: 0.0,
-        });
-        for stop in rc_stops.values() {
-            fill_tessellator
-                .tessellate_circle(
-                    point(stop.coord.x, stop.coord.y),
-                    120.,
-                    &FillOptions::default(),
-                    builder,
-                )
-                .unwrap();
-        }
-    }
 
+    let stop_instances: Vec<_> = rc_stops
+        .values()
+        .filter_map(|stop| {
+            if let None = stop.parent {
+                Some(StopInstance {
+                    position: [stop.coord.x, stop.coord.y, 0.0],
+                    ..StopInstance::default()
+                })
+            } else {
+                None
+            }
+        })
+        .collect();
+    let geo_range = 0..geo.indices.len() as u32;
+
+    fill_tessellator
+        .tessellate_circle(
+            point(0.0, 0.0),
+            120.,
+            &FillOptions::default(),
+            &mut BuffersBuilder::new(&mut geo, |vertex: FillVertex| Vertex {
+                position: vertex.position().to_3d().to_array(),
+                normal: [0.0, 0.0, 0.0],
+                color: [1.0, 1.0, 1.0],
+                miter: 0.0,
+            }),
+        )
+        .unwrap();
+    let stop_range = geo_range.end..geo.indices.len() as u32;
     let event_loop = EventLoop::new().unwrap();
     let window = WindowBuilder::new().build(&event_loop).unwrap();
     window.set_min_inner_size(Some(PhysicalSize::new(1600, 1600)));
     window.set_max_inner_size(Some(PhysicalSize::new(1600, 1600)));
 
-    let mut state = render::State::new(&window, camera_uniform, &boro_vertices[..], geo).await;
+    let mut state = render::State::new(
+        &window,
+        camera_uniform,
+        &boro_vertices[..],
+        geo,
+        &stop_instances[..],
+        geo_range,
+        stop_range,
+    )
+    .await;
 
     let (tx, rx) = channel();
     let stops_collection = rc_stops.clone();

@@ -1,13 +1,14 @@
 use geo::{Coord, Rect};
-use lyon::tessellation::VertexBuffers;
 use prost::bytes::BufMut;
 use std::io::Write;
 use std::num::NonZero;
 use std::ops::Range;
 use wgpu::util::DeviceExt;
-use wgpu::{Buffer, BufferDescriptor};
+use wgpu::Buffer;
 use winit::event::WindowEvent;
 use winit::window::Window;
+
+use super::stop::StopInstance;
 
 // https://sotrh.github.io/learn-wgpu/beginner/tutorial2-surface/#state-new
 pub struct State<'a> {
@@ -19,16 +20,17 @@ pub struct State<'a> {
     window: &'a Window,
     clear_color: wgpu::Color,
     render_pipeline: wgpu::RenderPipeline,
+    stops_render_pipeline: wgpu::RenderPipeline,
+    stops_instance_buffer: wgpu::Buffer,
     vertex_buffer: wgpu::Buffer,
-    active_stops_vertex_buffer: wgpu::Buffer,
-    active_stops_index_buffer: wgpu::Buffer,
-    active_stops_range: Range<u32>,
     num_vertices: usize,
+    num_stop_instances: usize,
     camera_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
     geo_vertex_buffer: wgpu::Buffer,
     geo_index_buffer: wgpu::Buffer,
     geo_range: Range<u32>,
+    stops_range: Range<u32>,
 }
 
 impl<'a> State<'a> {
@@ -38,6 +40,9 @@ impl<'a> State<'a> {
         camera: CameraUniform,
         static_verts: &[Vertex],
         geo: lyon::tessellation::VertexBuffers<Vertex, u32>,
+        stop_instances: &[StopInstance],
+        geo_range: Range<u32>,
+        stops_range: Range<u32>,
     ) -> State<'a> {
         let size = window.inner_size();
 
@@ -135,16 +140,14 @@ impl<'a> State<'a> {
             layout: Some(&render_pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &shader,
-                entry_point: "vs_main",     // 1.
-                buffers: &[Vertex::desc()], // 2.
+                entry_point: "vs_main",
+                buffers: &[Vertex::desc()],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             },
             fragment: Some(wgpu::FragmentState {
-                // 3.
                 module: &shader,
                 entry_point: "fs_main",
                 targets: &[Some(wgpu::ColorTargetState {
-                    // 4.
                     format: config.format,
                     blend: Some(wgpu::BlendState::REPLACE),
                     write_mask: wgpu::ColorWrites::ALL,
@@ -170,39 +173,68 @@ impl<'a> State<'a> {
             cache: None,
         });
 
+        let stops_render_pipeline =
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("Stops Render Pipeline"),
+                layout: Some(&render_pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: "vs_main_instanced",
+                    buffers: &[Vertex::desc(), StopInstance::desc()],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: "fs_main",
+                    targets: &[Some(wgpu::ColorTargetState {
+                        // 4.
+                        format: config.format,
+                        blend: Some(wgpu::BlendState::REPLACE),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                }),
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    strip_index_format: None,
+                    front_face: wgpu::FrontFace::Ccw,
+                    cull_mode: Some(wgpu::Face::Back),
+                    polygon_mode: wgpu::PolygonMode::Fill,
+                    unclipped_depth: false,
+                    conservative: false,
+                },
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState {
+                    count: 1,
+                    mask: !0,
+                    alpha_to_coverage_enabled: false,
+                },
+                multiview: None,
+                cache: None,
+            });
+
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Vertex Buffer"),
             contents: bytemuck::cast_slice(&static_verts[..]),
             usage: wgpu::BufferUsages::VERTEX,
         });
 
-        let geo_vslice: &[u8] = bytemuck::cast_slice(&geo.vertices[..]);
-        let geo_islice: &[u8] = bytemuck::cast_slice(&geo.indices[..]);
-
         let geo_vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Geo Vertex Buffer"),
-            contents: geo_vslice,
+            contents: bytemuck::cast_slice(&geo.vertices[..]),
             usage: wgpu::BufferUsages::VERTEX,
         });
 
         let geo_index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Geo Index Buffer"),
-            contents: geo_islice,
+            contents: bytemuck::cast_slice(&geo.indices[..]),
             usage: wgpu::BufferUsages::INDEX,
         });
 
-        let active_stops_vertex_buffer = device.create_buffer(&BufferDescriptor {
-            label: Some("Active Stops Vertex Buffer"),
-            size: geo_vslice.len() as u64,
-            mapped_at_creation: false,
+        let stops_instance_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Active Stops Instance Buffer"),
+            contents: bytemuck::cast_slice(&stop_instances[..]),
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-        });
-
-        let active_stops_index_buffer = device.create_buffer(&BufferDescriptor {
-            label: Some("Active Stops Index Buffer"),
-            size: geo_islice.len() as u64,
-            mapped_at_creation: false,
-            usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
         });
 
         Self {
@@ -220,77 +252,17 @@ impl<'a> State<'a> {
             },
             render_pipeline,
             vertex_buffer,
-            active_stops_vertex_buffer,
-            active_stops_index_buffer,
-            active_stops_range: 0..0 as u32,
+            stops_instance_buffer,
+            stops_render_pipeline,
             num_vertices: static_verts.len(),
+            num_stop_instances: stop_instances.len(),
             camera_buffer,
             camera_bind_group,
             geo_vertex_buffer,
             geo_index_buffer,
-            geo_range: 0..geo.indices.len() as u32,
+            geo_range,
+            stops_range,
         }
-    }
-
-    pub fn window(&self) -> &Window {
-        &self.window
-    }
-
-    pub fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
-        if new_size.width > 0 && new_size.height > 0 {
-            self.size = new_size;
-            self.config.width = new_size.width;
-            self.config.height = new_size.height;
-            self.surface.configure(&self.device, &self.config);
-        }
-    }
-
-    pub fn input(&mut self, event: &WindowEvent) -> bool {
-        // match event {
-        //     WindowEvent::CursorMoved {
-        //         device_id: _,
-        //         position,
-        //     } => {
-        //         self.window().request_redraw();
-        //         println!("{} {}", position.x, position.y);
-        //         self.clear_color = wgpu::Color {
-        //             r: position.x.abs() / self.size.width as f64,
-        //             g: position.y.abs() / self.size.height as f64,
-        //             ..self.clear_color
-        //         };
-        //         true
-        //     }
-        //     _ => false,
-        // }
-        false
-    }
-
-    pub fn update_stops(&mut self, active_stops: VertexBuffers<Vertex, u32>) {
-        let v_slice: &[u8] = bytemuck::cast_slice(&active_stops.vertices[..]);
-        let i_slice: &[u8] = bytemuck::cast_slice(&active_stops.indices[..]);
-        let mut vbuf = self
-            .queue
-            .write_buffer_with(
-                &self.active_stops_vertex_buffer,
-                0,
-                NonZero::new(v_slice.len() as u64).unwrap(),
-            )
-            .unwrap();
-
-        let mut ibuf = self
-            .queue
-            .write_buffer_with(
-                &self.active_stops_index_buffer,
-                0,
-                NonZero::new(i_slice.len() as u64).unwrap(),
-            )
-            .unwrap();
-        let mut vbw = vbuf.writer();
-        let mut ibw = ibuf.writer();
-        vbw.write_all(v_slice).unwrap();
-        ibw.write_all(i_slice).unwrap();
-
-        self.active_stops_range = 0..active_stops.indices.len() as u32;
     }
 
     pub fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
@@ -329,17 +301,63 @@ impl<'a> State<'a> {
                 .set_index_buffer(self.geo_index_buffer.slice(..), wgpu::IndexFormat::Uint32);
             render_pass.draw_indexed(self.geo_range.clone(), 0, 0..1);
 
-            render_pass.set_vertex_buffer(0, self.active_stops_vertex_buffer.slice(..));
-            render_pass.set_index_buffer(
-                self.active_stops_index_buffer.slice(..),
-                wgpu::IndexFormat::Uint32,
+            render_pass.set_pipeline(&self.stops_render_pipeline);
+            render_pass.set_vertex_buffer(1, self.stops_instance_buffer.slice(..));
+            render_pass.draw_indexed(
+                self.stops_range.clone(),
+                0,
+                0..self.num_stop_instances as u32,
             );
-            render_pass.draw_indexed(self.active_stops_range.clone(), 0, 0..1);
         }
         self.queue.submit(std::iter::once(encoder.finish()));
         output.present();
 
         Ok(())
+    }
+
+    pub fn window(&self) -> &Window {
+        &self.window
+    }
+
+    pub fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
+        if new_size.width > 0 && new_size.height > 0 {
+            self.size = new_size;
+            self.config.width = new_size.width;
+            self.config.height = new_size.height;
+            self.surface.configure(&self.device, &self.config);
+        }
+    }
+
+    pub fn input(&mut self, event: &WindowEvent) -> bool {
+        // match event {
+        //     WindowEvent::CursorMoved {
+        //         device_id: _,
+        //         position,
+        //     } => {
+        //         self.window().request_redraw();
+        //         println!("{} {}", position.x, position.y);
+        //         self.clear_color = wgpu::Color {
+        //             r: position.x.abs() / self.size.width as f64,
+        //             g: position.y.abs() / self.size.height as f64,
+        //             ..self.clear_color
+        //         };
+        //         true
+        //     }
+        //     _ => false,
+        // }
+        false
+    }
+
+    pub fn update_stops(&mut self, instances: Vec<StopInstance>) {
+        let slice: &[u8] = bytemuck::cast_slice(&instances[..]);
+
+        let mut buf = self.queue.write_buffer_with(
+            &self.stops_instance_buffer,
+            0,
+            NonZero::new(slice.len() as u64).unwrap(),
+        ).unwrap();
+        let mut writer = buf.writer();
+        writer.write_all(slice).unwrap();
     }
 }
 

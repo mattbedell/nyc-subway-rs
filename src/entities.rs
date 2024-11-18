@@ -52,6 +52,7 @@ pub struct Stop {
     pub coord: Coord,
     pub parent: Option<String>,
     pub status: StationStatus,
+    pub index: usize,
 }
 
 enum StationStatus {
@@ -112,6 +113,19 @@ where
     }
 }
 
+impl<K, V> EntityCollection<BTreeMap<K, V>>
+where
+    V: CollectibleEntity,
+{
+    pub fn translate_origin_from(&mut self, point: &Point) {
+        for val in self.collection.values_mut() {
+            let mut coord = val.coord().clone();
+            coord = util::geo::coord_to_xy(coord, point);
+            val.set_coord(coord);
+        }
+    }
+}
+
 impl EntityCollection<BTreeMap<String, Vec<ShapeSeq>>> {
     pub fn translate_origin_from(&mut self, point: &Point) {
         for shape in self.collection.values_mut() {
@@ -152,7 +166,7 @@ pub trait CollectibleEntity {
 }
 
 impl CollectibleEntity for Stop {
-    type Collection = EntityCollection<HashMap<String, Self>>;
+    type Collection = EntityCollection<BTreeMap<String, Self>>;
     fn coord(&self) -> geo::Coord<f32> {
         self.coord
     }
@@ -163,7 +177,7 @@ impl CollectibleEntity for Stop {
 
     fn collection() -> Self::Collection {
         EntityCollection {
-            collection: HashMap::new(),
+            collection: BTreeMap::new(),
         }
     }
 
@@ -172,17 +186,37 @@ impl CollectibleEntity for Stop {
         let stops_path = xdg.find_data_file("stops.txt").unwrap();
         let mut rdr = csv::Reader::from_path(stops_path)?;
         let mut collection = Self::collection();
+        let mut parent_idxs = HashMap::new();
+        let mut idx = 0;
         for rec in rdr.deserialize() {
             let row: StopRow = rec?;
+            let index = if let None = row.parent_station {
+                let ndx = idx;
+                parent_idxs.insert(row.stop_id.to_owned(), ndx);
+                idx += 1;
+                ndx
+            } else {
+                0
+            };
+
             let stop = Stop {
                 id: row.stop_id,
                 kind: row.location_type,
                 coord: geo::coord! { x: row.stop_lon, y: row.stop_lat },
                 parent: row.parent_station,
                 status: StationStatus::Inactive,
+                index,
             };
             collection.insert(stop.id.clone(), stop);
         }
+
+        // only parent stops are rendered, but we still want to look up the rendered stop instances by child stop_id
+        for stop in collection.values_mut() {
+            if let Some(parent_id) = &stop.parent {
+                stop.index = parent_idxs.get(parent_id).unwrap().to_owned();
+            }
+        }
+
         Ok(collection)
     }
 }
