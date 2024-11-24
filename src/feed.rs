@@ -81,6 +81,7 @@ struct FeedProcessor<'a> {
     fetched_at: u64,
     queue: VecDeque<FeedOp<'a>>,
     active_stops: HashMap<String, FeedEntity<'a>>,
+    active_stops_current: HashMap<String, bool>,
     feed: &'a Feed,
 }
 
@@ -99,6 +100,7 @@ impl<'a> FeedManager<'a> {
                 fetched_at: 0,
                 queue: VecDeque::new(),
                 active_stops: HashMap::new(),
+                active_stops_current: HashMap::new(),
                 feed,
             })
             .collect::<Vec<_>>();
@@ -126,7 +128,6 @@ impl<'a> FeedManager<'a> {
         if self.feed_idx >= self.feeds.len() {
             self.feed_idx = 0;
         }
-
         let feed = &mut self.feeds[self.feed_idx];
 
         let batch = feed.queue.len() as f32 / 10.;
@@ -297,16 +298,19 @@ impl FeedProcessor<'_> {
             });
 
         // queue remove old stops from state
-        for prev in self.active_stops.values() {
-            if current_stopped.contains_key(&prev.trip_id) == false {
+        let current_trips: Vec<_> = self.active_stops_current.keys().map(|k| k.to_owned()).collect();
+        for prev in current_trips {
+            if current_stopped.contains_key(&prev) == false {
+                self.active_stops_current.remove(&prev);
                 self.queue
-                    .push_back(FeedOp::Remove(prev.trip_id.to_owned()));
+                    .push_back(FeedOp::Remove(prev.to_owned()));
             }
         }
 
         // queue add new stops to state
         for entity in current_stopped.into_values() {
-            if self.active_stops.contains_key(entity.stop_id) == false {
+            if self.active_stops_current.contains_key(&entity.trip_id) == false {
+                self.active_stops_current.insert(entity.trip_id.clone(), true);
                 self.queue.push_back(FeedOp::Add(entity));
             }
         }
