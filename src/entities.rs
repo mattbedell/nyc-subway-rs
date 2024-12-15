@@ -1,10 +1,12 @@
 use crate::util;
 use anyhow::Result;
 use geo::{self, BoundingRect, GeometryCollection, MapCoords, Translate};
+use serde::de::DeserializeOwned;
 use serde::{de::Visitor, Deserialize, Deserializer};
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Formatter;
 use std::ops::{Deref, DerefMut};
+use std::path::{Path, PathBuf};
 use util::static_data::{BOROUGH_BOUNDARIES_STATIC, PARKS_STATIC};
 
 type Coord = geo::Coord<f32>;
@@ -18,7 +20,7 @@ enum LocationKind {
 }
 
 #[derive(Deserialize)]
-struct StopRow {
+pub struct StopRow {
     stop_id: String,
     stop_lat: f32,
     stop_lon: f32,
@@ -46,6 +48,7 @@ pub struct Park {
     geometry: geo::geometry::Geometry<f32>,
 }
 
+#[derive(Debug)]
 pub struct Stop {
     pub id: String,
     pub kind: LocationKind,
@@ -55,6 +58,7 @@ pub struct Stop {
     pub index: usize,
 }
 
+#[derive(Debug)]
 enum StationStatus {
     Active(Vec<String>),
     Inactive,
@@ -360,5 +364,81 @@ impl CollectibleEntity for Park {
         Ok(EntityCollection {
             collection: GeometryCollection(geos),
         })
+    }
+}
+
+trait StaticData {
+    const FILENAME: &'static str;
+    fn filepath() -> PathBuf {
+        let xdg = util::get_xdg().unwrap();
+        let path = xdg
+            .find_data_file(Self::FILENAME)
+            .expect(format!("Could not find load {} data", Self::FILENAME).as_str());
+        path
+    }
+}
+
+pub trait GTFSData<T>: Default
+where
+    T: StaticData + DeserializeOwned,
+{
+    fn load() -> Self {
+        let path = T::filepath();
+        let mut rdr = csv::Reader::from_path(path).unwrap();
+        let mut collection = Self::default();
+        for rec in rdr.deserialize() {
+            let row: T = rec.unwrap();
+            collection.insert_row(row);
+        }
+        collection
+    }
+
+    fn insert_row(&mut self, value: T);
+}
+
+impl StaticData for StopRow {
+    const FILENAME: &'static str = "stops.txt";
+}
+
+impl GTFSData<StopRow> for HashMap<String, Stop> {
+    fn insert_row(&mut self, value: StopRow) {
+        self.insert(
+            value.stop_id.clone(),
+            Stop {
+                id: value.stop_id,
+                kind: value.location_type,
+                coord: geo::coord! { x: value.stop_lon, y: value.stop_lat },
+                parent: value.parent_station,
+                status: StationStatus::Inactive,
+                index: 0,
+            },
+        );
+    }
+}
+
+impl StaticData for ShapeRow {
+    const FILENAME: &'static str = "shapes.txt";
+}
+
+impl GTFSData<ShapeRow> for BTreeMap<String, Vec<ShapeSeq>> {
+    fn insert_row(&mut self, value: ShapeRow) {
+        let shape = ShapeSeq {
+            coord: geo::coord! { x: value.shape_pt_lon, y: value.shape_pt_lat },
+            seq: value.shape_pt_sequence,
+        };
+        let seq = self
+            .entry(value.shape_id.clone())
+            .or_insert_with(|| Vec::new());
+        seq.push(shape);
+    }
+}
+
+impl StaticData for Route {
+    const FILENAME: &'static str = "routes.txt";
+}
+
+impl GTFSData<Route> for HashMap<String, Route> {
+    fn insert_row(&mut self, value: Route) {
+        self.insert(value.id.clone(), value);
     }
 }

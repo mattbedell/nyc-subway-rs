@@ -11,6 +11,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 use tokio;
+use std::collections::HashMap;
 
 use lyon;
 
@@ -28,7 +29,7 @@ use geo::{
     BoundingRect, Coord, CoordsIter, MultiPolygon, Point, Rect, Translate, TriangulateEarcut,
 };
 
-use entities::CollectibleEntity;
+use entities::{GTFSData, CollectibleEntity, Stop};
 use render::{CameraUniform, Vertex};
 use util::static_data::{
     self, BOROUGH_BOUNDARIES_STATIC, COASTLINE_STATIC, GTFS_STATIC, PARKS_STATIC,
@@ -238,23 +239,16 @@ async fn main() -> Result<()> {
                             _ => {}
                         }
 
-                        // if !surface_configured {
-                        //     return;
-                        // }
-
                         match state.render() {
                             Ok(_) => {}
-                            // Reconfigure the surface if it's lost or outdated
                             Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
                                 state.resize(state.size)
                             }
-                            // The system is out of memory, we should probably quit
                             Err(wgpu::SurfaceError::OutOfMemory) => {
                                 log::error!("OutOfMemory");
                                 control_flow.exit();
                             }
 
-                            // This happens when the a frame takes too long to present
                             Err(wgpu::SurfaceError::Timeout) => {
                                 log::warn!("Surface timeout")
                             }
