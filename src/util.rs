@@ -28,7 +28,10 @@ pub mod static_data {
         "nyc_coastline.geojson",
     );
     pub const BOROUGH_BOUNDARIES_STATIC: StaticDataEndpoint = (
-        "https://data.cityofnewyork.us/resource/7t3b-ywvw.geojson",
+        // federal GIS data from this dataset has been purged
+        // rehosted at bedell.co
+        // "https://data.cityofnewyork.us/resource/7t3b-ywvw.geojson",
+        "https://bedell.co/static/nyc_boroughs.geojson",
         "nyc_boroughs.geojson",
     );
 

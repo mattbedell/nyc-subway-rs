@@ -55,6 +55,7 @@ async fn main() -> Result<()> {
     }
 
     if static_data::shoud_fetch(BOROUGH_BOUNDARIES_STATIC) {
+        println!("fetching static");
         static_data::fetch(BOROUGH_BOUNDARIES_STATIC, Some(xdg.get_data_home())).await?;
     }
 
